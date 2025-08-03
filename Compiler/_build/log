@@ -1,0 +1,6 @@
+# dune init project compiler
+# OCAMLPARAM: unset
+# Shared cache: enabled-except-user-rules
+# Shared cache location: /root/.cache/dune/db
+# Workspace root: /mnt/c/Users/Lenovo/Desktop/Compiler/compiler
+# Auto-detected concurrency: 24
