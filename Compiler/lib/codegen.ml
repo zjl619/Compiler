@@ -91,7 +91,7 @@ let alloc_temp_reg ctx =
 
 (* 释放临时寄存器 *)
 let free_temp_reg ctx =
-    { ctx with temp_regs_used = ctx.temp_regs_used - 1 }
+    { ctx with temp_regs_used = max 0 (ctx.temp_regs_used - 1) }
 
 (* 计算栈对齐 *)
 let align_stack size align =
@@ -122,15 +122,14 @@ let gen_prologue ctx func =
 
 (* 函数结语生成 - 修复寄存器恢复顺序和偏移量 *)
 let gen_epilogue ctx =
+    (* 关键修复：按保存顺序的逆序恢复寄存器 *)
     let num_saved = List.length ctx.saved_regs in
+    let restore_list = 
+        List.rev (["ra"] @ ctx.saved_regs) (* 恢复顺序：s11, s10, ..., s0, ra *)
+    in
     let restore_asm = 
-        (* 恢复顺序：先恢复ra，然后逆序恢复s11到s0 *)
-        let restore_list = 
-            ["ra"] @ (List.rev ctx.saved_regs) 
-        in
         List.mapi (fun i reg ->
-            let offset = (num_saved * 4) - (i * 4) in
-            Printf.sprintf "    lw %s, %d(sp)" reg offset
+            Printf.sprintf "    lw %s, %d(sp)" reg (i * 4)
         ) restore_list
         |> String.concat "\n"
     in
