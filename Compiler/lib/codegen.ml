@@ -122,11 +122,12 @@ let gen_prologue ctx func =
 let gen_epilogue ctx =
     (* 生成恢复寄存器的汇编代码 - 逆序恢复：先恢复ra，然后s11-s0 *)
     let restore_regs_asm = 
+        (* 关键修复：恢复顺序应与保存顺序相反 *)
         let restore_list = 
-            List.rev (("ra" :: ctx.saved_regs) (* 恢复顺序：ra, s11, s10, ..., s0 *)
+            ["ra"] @ (List.rev ctx.saved_regs) (* 恢复顺序：ra, s11, s10, ..., s0 *)
         in
         List.mapi (fun i reg ->
-            let offset = (List.length ctx.saved_regs * 4) - (i * 4) in
+            let offset = (List.length restore_list - 1 - i) * 4 in
             Printf.sprintf "    lw %s, %d(sp)" reg offset
         ) restore_list
         |> String.concat "\n"
@@ -344,9 +345,11 @@ and gen_stmt ctx stmt =
                 (ctx, asm, r)
             | None -> (ctx, "", "zero")
         in
-        let move_result = if reg <> "a0" then 
+        let move_result = 
+            if reg <> "a0" && reg <> "zero" then 
                 Printf.sprintf "\n    mv a0, %s" reg 
-            else "" in
+            else "" 
+        in
         (free_temp_reg ctx, expr_asm ^ move_result)
     
     | EmptyStmt -> (ctx, "")
@@ -382,8 +385,8 @@ let gen_function func =
                     gen_save rest (index + 1) 
                         (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
                 ) else (
-                    (* 栈传递参数 *)
-                    let stack_offset = (index - 8) * 4 + ctx.frame_size in
+                    (* 栈传递参数 - 关键修复：正确计算栈传递参数位置 *)
+                    let stack_offset = ctx.frame_size + (index - 8) * 4 in
                     let reg_temp = "t0" in  (* 使用临时寄存器 *)
                     gen_save rest (index + 1) 
                         (asm ^ Printf.sprintf "    lw %s, %d(sp)\n" reg_temp stack_offset ^
@@ -394,14 +397,14 @@ let gen_function func =
     in
     
     (* 生成函数体 *)
-    let (_, body_asm) = 
+    let (ctx_after, body_asm) = 
         match func.body with
         | Block stmts -> gen_stmts ctx stmts
         | _ -> gen_stmt ctx func.body
     in
     
     (* 生成函数结语 *)
-    let epilogue_asm = gen_epilogue ctx in
+    let epilogue_asm = gen_epilogue ctx_after in
     
     prologue_asm ^ "\n" ^ save_params_asm ^ body_asm ^ epilogue_asm
 
