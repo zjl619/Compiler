@@ -123,7 +123,6 @@ let gen_prologue ctx func =
 (* 函数结语生成 - 修复寄存器恢复顺序和偏移量 *)
 let gen_epilogue ctx =
     (* 关键修复：按保存顺序的逆序恢复寄存器 *)
-    let num_saved = List.length ctx.saved_regs in
     let restore_list = 
         List.rev (["ra"] @ ctx.saved_regs) (* 恢复顺序：s11, s10, ..., s0, ra *)
     in
