@@ -180,6 +180,9 @@ let rec gen_expr ctx expr =
         let ctx = free_temp_reg ctx in
         (ctx, asm ^ "\n" ^ instr, reg_dest)
     | FuncCall (name, args) ->
+        (* 关键修复：保存调用者保存的寄存器 *)
+        let (ctx, save_asm) = save_caller_saved ctx in
+        
         (* 先计算所有参数表达式 *)
         let (ctx, arg_asm, arg_regs) = gen_args ctx args in
         
@@ -227,12 +230,45 @@ let rec gen_expr ctx expr =
         let (ctx, reg_dest) = alloc_temp_reg ctx in
         let move_result = Printf.sprintf "    mv %s, a0" reg_dest in
         
+        (* 关键修复：恢复调用者保存的寄存器 *)
+        let (ctx, restore_asm) = restore_caller_saved ctx in
+        
         (* 组合汇编代码 *)
-        let asm = arg_asm ^ stack_adj_asm ^ move_args_asm ^ call_asm ^ restore_stack_asm ^ "\n" ^ move_result in
+        let asm = save_asm ^ arg_asm ^ stack_adj_asm ^ move_args_asm ^ call_asm ^ restore_stack_asm ^ "\n" ^ restore_asm ^ move_result in
         
         (* 释放参数使用的临时寄存器 *)
         let ctx = List.fold_left (fun ctx _ -> free_temp_reg ctx) ctx arg_regs in
         (ctx, asm, reg_dest)
+
+(* 保存调用者保存的寄存器 *)
+and save_caller_saved ctx =
+    let caller_saved_regs = 
+        List.filter_map (fun (reg, t) -> 
+            match t with CallerSaved -> Some reg | _ -> None) ctx.reg_map
+    in
+    let (ctx, save_asm) = 
+        List.fold_left (fun (ctx, asm) reg ->
+            let (ctx, temp_reg) = alloc_temp_reg ctx in
+            let new_asm = asm ^ Printf.sprintf "    mv %s, %s\n" temp_reg reg in
+            (ctx, new_asm)
+        ) (ctx, "") caller_saved_regs
+    in
+    (ctx, save_asm)
+
+(* 恢复调用者保存的寄存器 *)
+and restore_caller_saved ctx =
+    let caller_saved_regs = 
+        List.filter_map (fun (reg, t) -> 
+            match t with CallerSaved -> Some reg | _ -> None) ctx.reg_map
+    in
+    let (ctx, restore_asm) = 
+        List.fold_left (fun (ctx, asm) reg ->
+            let (ctx, temp_reg) = alloc_temp_reg ctx in
+            let new_asm = asm ^ Printf.sprintf "    mv %s, %s\n" reg temp_reg in
+            (free_temp_reg ctx, new_asm)
+        ) (ctx, "") caller_saved_regs
+    in
+    (ctx, restore_asm)
 
 (* 生成参数代码 - 返回参数寄存器列表 *)
 and gen_args ctx args =
