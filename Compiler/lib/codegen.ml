@@ -180,8 +180,15 @@ let rec gen_expr ctx expr =
         let ctx = free_temp_reg ctx in
         (ctx, asm ^ "\n" ^ instr, reg_dest)
     | FuncCall (name, args) ->
-        (* 关键修复：保存调用者保存的寄存器 *)
-        let (ctx, save_asm) = save_caller_saved ctx in
+        (* 关键修复：保存所有临时寄存器 *)
+        let temp_count = ctx.temp_regs_used in
+        let save_temps_asm = 
+            if temp_count > 0 then
+                List.init temp_count (fun i -> 
+                    Printf.sprintf "    sw t%d, %d(sp)" i (i * 4))
+                |> String.concat "\n"
+            else ""
+        in
         
         (* 先计算所有参数表达式 *)
         let (ctx, arg_asm, arg_regs) = gen_args ctx args in
@@ -189,11 +196,20 @@ let rec gen_expr ctx expr =
         (* 计算额外参数数量 *)
         let n_extra = max (List.length args - 8) 0 in
         let temp_space = if n_extra > 0 then n_extra * 4 else 0 in
+        let temp_save_space = temp_count * 4 in
+        let total_temp_space = align_stack (temp_space + temp_save_space) stack_align in
         
         (* 调整栈指针 *)
         let stack_adj_asm = 
-            if temp_space > 0 then 
-                Printf.sprintf "    addi sp, sp, -%d\n" (align_stack temp_space stack_align)
+            if total_temp_space > 0 then 
+                Printf.sprintf "    addi sp, sp, -%d\n" total_temp_space
+            else ""
+        in
+        
+        (* 保存临时寄存器 *)
+        let save_asm = 
+            if temp_count > 0 then
+                save_temps_asm ^ "\n"
             else ""
         in
         
@@ -209,7 +225,7 @@ let rec gen_expr ctx expr =
                     in
                     move_args rest (index+1) new_asm
                 | reg::rest ->
-                    let stack_offset = (index - 8) * 4 in
+                    let stack_offset = temp_save_space + (index - 8) * 4 in
                     move_args rest (index+1) 
                         (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg stack_offset)
             in
@@ -219,10 +235,19 @@ let rec gen_expr ctx expr =
         (* 函数调用 *)
         let call_asm = Printf.sprintf "    call %s\n" name in
         
+        (* 恢复临时寄存器 *)
+        let restore_temps_asm = 
+            if temp_count > 0 then
+                List.init temp_count (fun i -> 
+                    Printf.sprintf "    lw t%d, %d(sp)" i (i * 4))
+                |> String.concat "\n"
+            else ""
+        in
+        
         (* 恢复栈指针 *)
         let restore_stack_asm = 
-            if temp_space > 0 then 
-                Printf.sprintf "    addi sp, sp, %d" (align_stack temp_space stack_align)
+            if total_temp_space > 0 then 
+                Printf.sprintf "    addi sp, sp, %d" total_temp_space
             else ""
         in
         
@@ -230,45 +255,21 @@ let rec gen_expr ctx expr =
         let (ctx, reg_dest) = alloc_temp_reg ctx in
         let move_result = Printf.sprintf "    mv %s, a0" reg_dest in
         
-        (* 关键修复：恢复调用者保存的寄存器 *)
-        let (ctx, restore_asm) = restore_caller_saved ctx in
-        
         (* 组合汇编代码 *)
-        let asm = save_asm ^ arg_asm ^ stack_adj_asm ^ move_args_asm ^ call_asm ^ restore_stack_asm ^ "\n" ^ restore_asm ^ move_result in
+        let asm = 
+            arg_asm ^ 
+            stack_adj_asm ^ 
+            save_asm ^ 
+            move_args_asm ^ 
+            call_asm ^ 
+            restore_temps_asm ^ "\n" ^ 
+            restore_stack_asm ^ "\n" ^ 
+            move_result 
+        in
         
         (* 释放参数使用的临时寄存器 *)
         let ctx = List.fold_left (fun ctx _ -> free_temp_reg ctx) ctx arg_regs in
         (ctx, asm, reg_dest)
-
-(* 保存调用者保存的寄存器 *)
-and save_caller_saved ctx =
-    let caller_saved_regs = 
-        List.filter_map (fun (reg, t) -> 
-            match t with CallerSaved -> Some reg | _ -> None) ctx.reg_map
-    in
-    let (ctx, save_asm) = 
-        List.fold_left (fun (ctx, asm) reg ->
-            let (ctx, temp_reg) = alloc_temp_reg ctx in
-            let new_asm = asm ^ Printf.sprintf "    mv %s, %s\n" temp_reg reg in
-            (ctx, new_asm)
-        ) (ctx, "") caller_saved_regs
-    in
-    (ctx, save_asm)
-
-(* 恢复调用者保存的寄存器 *)
-and restore_caller_saved ctx =
-    let caller_saved_regs = 
-        List.filter_map (fun (reg, t) -> 
-            match t with CallerSaved -> Some reg | _ -> None) ctx.reg_map
-    in
-    let (ctx, restore_asm) = 
-        List.fold_left (fun (ctx, asm) reg ->
-            let (ctx, temp_reg) = alloc_temp_reg ctx in
-            let new_asm = asm ^ Printf.sprintf "    mv %s, %s\n" reg temp_reg in
-            (free_temp_reg ctx, new_asm)
-        ) (ctx, "") caller_saved_regs
-    in
-    (ctx, restore_asm)
 
 (* 生成参数代码 - 返回参数寄存器列表 *)
 and gen_args ctx args =
@@ -406,7 +407,7 @@ let gen_function func =
     (* 生成函数序言 *)
     let (prologue_asm, ctx) = gen_prologue ctx func in
     
-    (* 保存参数到局部变量区 *)
+    (* 保存参数到局部变量区 - 关键修复：栈传递参数偏移量 *)
     let save_params_asm = 
         let rec gen_save params index asm =
             match params with
@@ -419,8 +420,8 @@ let gen_function func =
                     gen_save rest (index + 1) 
                         (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
                 ) else (
-                    (* 栈传递参数 *)
-                    let stack_offset = ctx.frame_size + (index - 8) * 4 in
+                    (* 关键修复：栈传递参数在调用者栈帧中，不在当前栈帧 *)
+                    let stack_offset = (index - 8) * 4 in
                     let (_, reg_temp) = alloc_temp_reg ctx in
                     gen_save rest (index + 1) 
                         (asm ^ Printf.sprintf "    lw %s, %d(sp)\n" reg_temp stack_offset ^
