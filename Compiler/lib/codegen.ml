@@ -151,7 +151,7 @@ let alloc_temp_reg ctx =
     let available_caller = 
         List.filter (fun reg -> 
             not (List.exists (fun (_, r) -> r = reg) ctx.expr_table)
-        caller_saved
+       ) caller_saved
     in
     
     if available_caller <> [] then
