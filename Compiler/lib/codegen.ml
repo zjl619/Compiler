@@ -58,7 +58,7 @@ let rec const_fold_expr expr =
     | BinOp(e1, op, e2) ->
         let e1' = const_fold_expr e1 in
         let e2' = const_fold_expr e2 in
-        (match (e1', e2') with
+        match (e1', e2') with
         | (IntLit n1, IntLit n2) ->
             (try
                 let result = match op with
@@ -81,7 +81,7 @@ let rec const_fold_expr expr =
         | _ -> BinOp(e1', op, e2')
     | UnOp(op, e) ->
         let e' = const_fold_expr e in
-        (match e' with
+        match e' with
         | IntLit n ->
             let result = match op with
             | UPlus  -> n
@@ -89,7 +89,7 @@ let rec const_fold_expr expr =
             | Not    -> if n = 0 then 1 else 0
             in
             IntLit result
-        | _ -> UnOp(op, e'))
+        | _ -> UnOp(op, e')
     | FuncCall(name, args) -> 
         FuncCall(name, List.map const_fold_expr args)
 
@@ -433,7 +433,8 @@ and gen_stmt ctx stmt =
         let (ctx, then_asm) = gen_stmt ctx then_stmt in
         let (ctx, else_asm) = match else_stmt with
             | Some s -> gen_stmt ctx s
-            | None -> (ctx, "") in
+            | None -> (ctx, "") 
+        in
         
         let asm = cond_asm ^
                 Printf.sprintf "\n    beqz %s, %s" cond_reg else_label ^
@@ -443,7 +444,8 @@ and gen_stmt ctx stmt =
                 Printf.sprintf "\n    j %s" end_label ^
                 Printf.sprintf "\n%s:" then_label ^
                 then_asm ^
-                Printf.sprintf "\n%s:" end_label in
+                Printf.sprintf "\n%s:" end_label 
+        in
         (free_temp_reg ctx cond_reg, asm)
     
     | While (cond, body) ->
