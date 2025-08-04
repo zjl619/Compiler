@@ -122,10 +122,8 @@ let gen_prologue ctx func =
 
 (* 函数结语生成 - 修复寄存器恢复顺序和偏移量 *)
 let gen_epilogue ctx =
-    (* 关键修复：按保存顺序的逆序恢复寄存器 *)
-    let restore_list = 
-        List.rev (["ra"] @ ctx.saved_regs) (* 恢复顺序：s11, s10, ..., s0, ra *)
-    in
+    (* 关键修复：按保存顺序恢复寄存器 *)
+    let restore_list = ctx.saved_regs @ ["ra"] in
     let restore_asm = 
         List.mapi (fun i reg ->
             Printf.sprintf "    lw %s, %d(sp)" reg (i * 4)
