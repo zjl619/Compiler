@@ -1,3 +1,4 @@
+open Ast
 (* 寄存器分类 *)
 type reg_type = 
   | CallerSaved   (* 调用者保存寄存器 *)
