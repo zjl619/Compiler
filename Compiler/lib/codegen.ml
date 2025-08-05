@@ -328,13 +328,13 @@ and gen_stmt ctx stmt =
         let ctx = add_var ctx name 4 in
         let offset = get_var_offset ctx name in
         let asm = expr_asm ^ Printf.sprintf "\n    sw %s, %d(sp)" reg offset in
-        (free_temp_reg ctx, asm)
+        (free_temp_reg ctx reg, asm)
     
     | VarAssign (name, expr) ->
         let offset = get_var_offset ctx name in
         let (ctx, expr_asm, reg) = gen_expr ctx expr in
         let asm = expr_asm ^ Printf.sprintf "\n    sw %s, %d(sp)" reg offset in
-        (free_temp_reg ctx, asm)
+        (free_temp_reg ctx reg, asm)
     
     | If (cond, then_stmt, else_stmt) ->
         (* 在条件分支前重置CSE表 *)
@@ -359,7 +359,7 @@ and gen_stmt ctx stmt =
                 then_asm ^
                 Printf.sprintf "\n    j %s" end_label ^  (* 关键修复：添加跳转结束 *)
                 Printf.sprintf "\n%s:" end_label in
-        (free_temp_reg ctx, asm)  (* 释放条件寄存器 *)
+        (free_temp_reg ctx cond_reg, asm)  (* 释放条件寄存器 *)
     
     | While (cond, body) ->
         (* 在循环前重置CSE表 *)
@@ -384,7 +384,7 @@ let (_, end_label)   = fresh_label ctx_loop "loop_end" in
                 body_asm ^
                 Printf.sprintf "\n    j %s" begin_label ^
                 Printf.sprintf "\n%s:" end_label in
-        (free_temp_reg ctx_after_loop, asm)
+        (free_temp_reg ctx_after_loop cond_reg, asm)
     
     | Break ->
         (match ctx.loop_stack with
@@ -401,7 +401,7 @@ let (_, end_label)   = fresh_label ctx_loop "loop_end" in
     | Return expr_opt ->
         (* 在返回前重置CSE表 *)
         let ctx_return = { ctx with expr_table = [] } in
-        let (ctx, expr_asm, _reg) = 
+        let (ctx, expr_asm, reg) = 
             match expr_opt with
             | Some expr -> 
                 let (ctx, asm, r) = gen_expr ctx_return expr in
@@ -411,11 +411,11 @@ let (_, end_label)   = fresh_label ctx_loop "loop_end" in
         in
         (* 关键修复：在返回语句后直接跳转到函数结尾 *)
         let epilogue_asm = gen_epilogue ctx in
-        (free_temp_reg ctx, expr_asm ^ "\n" ^ epilogue_asm)
+        (free_temp_reg ctx reg, expr_asm ^ "\n" ^ epilogue_asm)
     | EmptyStmt -> (ctx, "")
     | ExprStmt e -> 
-        let (ctx, asm, _) = gen_expr ctx e in 
-        (free_temp_reg ctx, asm)
+        let (ctx, asm,reg) = gen_expr ctx e in 
+        (free_temp_reg ctx reg, asm)
 
 (* 函数代码生成 *)
 let gen_function func =
