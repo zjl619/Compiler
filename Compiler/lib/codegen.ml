@@ -21,6 +21,7 @@ type context = {
     temp_regs_used: int;           (* 已使用的临时寄存器数量 *)
     saved_area_size: int;          (* 保存区域大小（包含RA和保存的寄存器） *)
     expr_table: (expr * string) list; (* 公共子表达式表 *)
+    temp_pool: string list  (* 可用的临时寄存器池 *)
 }
 
 (* 创建新上下文 - 初始化 expr_table *)
@@ -47,7 +48,9 @@ let create_context func_name =
       param_count = 0;
       temp_regs_used = 0;
       saved_area_size = 52;  (* 4(ra) + 12*4(regs) = 52 *)
-      expr_table = [] }  (* 初始化为空 *)
+      expr_table = [] 
+      temp_pool = ["t0"; "t1"; "t2"; "t3"; "t4"; "t5"; "t6"]
+}  (* 初始化为空 *)
 
 (* 栈对齐常量 *)
 let stack_align = 16
@@ -84,16 +87,21 @@ let add_var ctx name size =
         }
     | [] -> failwith "No active scope"
 
-(* 分配临时寄存器 *)
 let alloc_temp_reg ctx =
-    if ctx.temp_regs_used >= 7 then
-        failwith "No more temporary registers available";
-    let reg = Printf.sprintf "t%d" ctx.temp_regs_used in
-    { ctx with temp_regs_used = ctx.temp_regs_used + 1 }, reg
+  match ctx.temp_pool with
+  | [] -> failwith "No temporary registers available"
+  | reg :: rest ->
+      let ctx' = { ctx with temp_pool = rest } in
+      (ctx', reg)
 
-(* 释放临时寄存器 *)
-let free_temp_reg ctx =
-    { ctx with temp_regs_used = ctx.temp_regs_used - 1 }
+let free_temp_reg ctx reg =
+  if List.mem reg ["t0"; "t1"; "t2"; "t3"; "t4"; "t5"; "t6"] then
+    (* 防止重复释放 *)
+    if List.mem reg ctx.temp_pool then ctx
+    else { ctx with temp_pool = reg :: ctx.temp_pool }
+  else
+    ctx  (* 不是临时寄存器就忽略 *)
+
 
 (* 计算栈对齐 *)
 let align_stack size align =
@@ -189,7 +197,8 @@ let rec gen_expr ctx expr =
             | Or  -> Printf.sprintf "or %s, %s, %s" reg_dest reg1 reg2
             in
             (* 释放临时寄存器 *)
-            let ctx = free_temp_reg (free_temp_reg ctx) in
+            let ctx = free_temp_reg ctx reg2 in
+            let ctx = free_temp_reg ctx reg1 in
             (* 将表达式加入CSE表 *)
             let ctx = { ctx with expr_table = (expr, reg_dest) :: ctx.expr_table } in
             (ctx, asm1 ^ "\n" ^ asm2 ^ "\n" ^ instr, reg_dest)
