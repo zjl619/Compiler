@@ -21,7 +21,7 @@ type context = {
     temp_regs_used: int;           (* 已使用的临时寄存器数量 *)
     saved_area_size: int;          (* 保存区域大小（包含RA和保存的寄存器） *)
     expr_table: (expr * string) list; (* 公共子表达式表 *)
-    temp_pool: string list  (* 可用的临时寄存器池 *)
+    temp_pool: string list ; (* 可用的临时寄存器池 *)
 }
 
 (* 创建新上下文 - 初始化 expr_table *)
@@ -48,7 +48,7 @@ let create_context func_name =
       param_count = 0;
       temp_regs_used = 0;
       saved_area_size = 52;  (* 4(ra) + 12*4(regs) = 52 *)
-      expr_table = [] 
+      expr_table = [] ;
       temp_pool = ["t0"; "t1"; "t2"; "t3"; "t4"; "t5"; "t6"]
 }  (* 初始化为空 *)
 
