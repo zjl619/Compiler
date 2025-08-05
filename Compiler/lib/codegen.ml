@@ -453,7 +453,7 @@ and gen_stmts ctx stmts =
     ) (ctx, "") stmts
 
 (* 循环展开 - 对简单循环进行展开 *)
-let unroll_loop ctx cond body =
+and unroll_loop ctx cond body =
     (* 尝试解析循环次数 *)
     let rec get_loop_count expr =
         match expr with
