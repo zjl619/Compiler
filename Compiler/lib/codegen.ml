@@ -461,12 +461,12 @@ and unroll_loop ctx cond body =
         | BinOp(Var var, Le, IntLit n) -> Some (var, 0, n+1)
         | BinOp(IntLit n, Lt, Var var) -> Some (var, n, max_int) (* 无法确定上限 *)
         | BinOp(IntLit n, Le, Var var) -> Some (var, n, max_int) (* 无法确定上限 *)
-        | BinOp(Var var1, Lt, Var var2) -> None (* 变量比较 *)
+        | BinOp(Var _, Lt, Var _) -> None (* 变量比较 *)
         | _ -> None
     in
     
     match get_loop_count cond with
-    | Some (var, start, end_val) when end_val - start <= 4 && start >= 0 ->
+    | Some (_, start, end_val) when end_val - start <= 4 && start >= 0 ->
         (* 小循环且已知次数，进行展开 *)
         let (ctx, asm) = gen_stmts ctx (List.init (end_val - start) (fun _ -> body)) in
         (ctx, asm)
