@@ -284,7 +284,7 @@ let rec gen_expr ctx expr =
                     restore_temps_asm ^ "\n" ^ restore_stack_asm ^ "\n" ^ 
                     move_result in
             
-            let ctx = List.fold_left (fun ctx _ -> free_temp_reg ctx) ctx arg_regs in
+            let ctx = List.fold_left (fun ctx _ -> free_temp_reg reg ctx) ctx arg_regs in
             (ctx, asm, reg_dest)
 
 (* 生成参数代码 - 返回参数寄存器列表 *)
