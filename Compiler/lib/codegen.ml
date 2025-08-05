@@ -351,9 +351,56 @@ and gen_args ctx args =
     in
     process_args ctx "" [] args
 
+(* 处理语句列表的辅助函数 *)
+let gen_stmts ctx stmts =
+    List.fold_left (fun (ctx, asm) stmt ->
+        let (ctx', stmt_asm) = gen_stmt ctx stmt in
+        (ctx', asm ^ "\n" ^ stmt_asm)
+    ) (ctx, "") stmts
+
+(* 循环展开 - 对简单循环进行展开 *)
+and unroll_loop ctx cond body =
+    (* 尝试解析循环次数 *)
+    let  get_loop_count expr =
+        match expr with
+        | BinOp(Var var, Lt, IntLit n) -> Some (var, 0, n)
+        | BinOp(Var var, Le, IntLit n) -> Some (var, 0, n+1)
+        | BinOp(IntLit n, Lt, Var var) -> Some (var, n, max_int) (* 无法确定上限 *)
+        | BinOp(IntLit n, Le, Var var) -> Some (var, n, max_int) (* 无法确定上限 *)
+        | BinOp(Var _, Lt, Var _) -> None (* 变量比较 *)
+        | _ -> None
+    in
+    
+    match get_loop_count cond with
+    | Some (_, start, end_val) when end_val - start <= 4 && start >= 0 ->
+        (* 小循环且已知次数，进行展开 *)
+        let (ctx, asm) = gen_stmts ctx (List.init (end_val - start) (fun _ -> body)) in
+        (ctx, asm)
+    | _ ->
+        (* 常规循环生成 *)
+        let (ctx, begin_label) = fresh_label ctx "loop_begin" in
+        let (ctx, end_label) = fresh_label ctx "loop_end" in
+        let (ctx, cond_asm, cond_reg) = gen_expr ctx cond in
+        
+        let loop_ctx = { ctx with 
+            loop_stack = (begin_label, end_label) :: ctx.loop_stack } in
+        let (ctx_after_body, body_asm) = gen_stmt loop_ctx body in
+        
+        (* 仅弹出循环栈，保留其他字段 *)
+        let ctx_after_loop = { ctx_after_body with 
+            loop_stack = List.tl ctx_after_body.loop_stack } in
+        
+        let asm = Printf.sprintf "%s:" begin_label ^
+                cond_asm ^
+                Printf.sprintf "\n    beqz %s, %s" cond_reg end_label ^
+                body_asm ^
+                Printf.sprintf "\n    j %s" begin_label ^
+                Printf.sprintf "\n%s:" end_label in
+        (free_temp_reg ctx_after_loop cond_reg, asm)
+
 
 (* 语句代码生成 *)
-let rec gen_stmt ctx stmt =
+and gen_stmt ctx stmt =
     (* 常量折叠语句 *)
     let stmt = const_fold_stmt stmt in
     
@@ -445,52 +492,6 @@ let rec gen_stmt ctx stmt =
         let (ctx, asm, reg) = gen_expr ctx e in 
         (free_temp_reg ctx reg, asm)
 
-(* 处理语句列表的辅助函数 *)
-and gen_stmts ctx stmts =
-    List.fold_left (fun (ctx, asm) stmt ->
-        let (ctx', stmt_asm) = gen_stmt ctx stmt in
-        (ctx', asm ^ "\n" ^ stmt_asm)
-    ) (ctx, "") stmts
-
-(* 循环展开 - 对简单循环进行展开 *)
-and unroll_loop ctx cond body =
-    (* 尝试解析循环次数 *)
-    let  get_loop_count expr =
-        match expr with
-        | BinOp(Var var, Lt, IntLit n) -> Some (var, 0, n)
-        | BinOp(Var var, Le, IntLit n) -> Some (var, 0, n+1)
-        | BinOp(IntLit n, Lt, Var var) -> Some (var, n, max_int) (* 无法确定上限 *)
-        | BinOp(IntLit n, Le, Var var) -> Some (var, n, max_int) (* 无法确定上限 *)
-        | BinOp(Var _, Lt, Var _) -> None (* 变量比较 *)
-        | _ -> None
-    in
-    
-    match get_loop_count cond with
-    | Some (_, start, end_val) when end_val - start <= 4 && start >= 0 ->
-        (* 小循环且已知次数，进行展开 *)
-        let (ctx, asm) = gen_stmts ctx (List.init (end_val - start) (fun _ -> body)) in
-        (ctx, asm)
-    | _ ->
-        (* 常规循环生成 *)
-        let (ctx, begin_label) = fresh_label ctx "loop_begin" in
-        let (ctx, end_label) = fresh_label ctx "loop_end" in
-        let (ctx, cond_asm, cond_reg) = gen_expr ctx cond in
-        
-        let loop_ctx = { ctx with 
-            loop_stack = (begin_label, end_label) :: ctx.loop_stack } in
-        let (ctx_after_body, body_asm) = gen_stmt loop_ctx body in
-        
-        (* 仅弹出循环栈，保留其他字段 *)
-        let ctx_after_loop = { ctx_after_body with 
-            loop_stack = List.tl ctx_after_body.loop_stack } in
-        
-        let asm = Printf.sprintf "%s:" begin_label ^
-                cond_asm ^
-                Printf.sprintf "\n    beqz %s, %s" cond_reg end_label ^
-                body_asm ^
-                Printf.sprintf "\n    j %s" begin_label ^
-                Printf.sprintf "\n%s:" end_label in
-        (free_temp_reg ctx_after_loop cond_reg, asm)
 
 (* 函数代码生成 *)
 let gen_function func =
