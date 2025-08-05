@@ -455,7 +455,7 @@ and gen_stmts ctx stmts =
 (* 循环展开 - 对简单循环进行展开 *)
 and unroll_loop ctx cond body =
     (* 尝试解析循环次数 *)
-    let rec get_loop_count expr =
+    let  get_loop_count expr =
         match expr with
         | BinOp(Var var, Lt, IntLit n) -> Some (var, 0, n)
         | BinOp(Var var, Le, IntLit n) -> Some (var, 0, n+1)
@@ -478,7 +478,7 @@ and unroll_loop ctx cond body =
         
         let loop_ctx = { ctx with 
             loop_stack = (begin_label, end_label) :: ctx.loop_stack } in
-        let (ctx_after_body, body_asm) = gen_stmts loop_ctx body in
+        let (ctx_after_body, body_asm) = gen_stmt loop_ctx body in
         
         (* 仅弹出循环栈，保留其他字段 *)
         let ctx_after_loop = { ctx_after_body with 
