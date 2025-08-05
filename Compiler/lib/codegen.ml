@@ -353,7 +353,7 @@ and gen_args ctx args =
 
 
 (* 语句代码生成 *)
-and gen_stmt ctx stmt =
+let gen_stmt ctx stmt =
     (* 常量折叠语句 *)
     let stmt = const_fold_stmt stmt in
     
@@ -446,7 +446,7 @@ and gen_stmt ctx stmt =
         (free_temp_reg ctx reg, asm)
 
 (* 处理语句列表的辅助函数 *)
-let rec gen_stmts ctx stmts =
+and rec gen_stmts ctx stmts =
     List.fold_left (fun (ctx, asm) stmt ->
         let (ctx', stmt_asm) = gen_stmt ctx stmt in
         (ctx', asm ^ "\n" ^ stmt_asm)
