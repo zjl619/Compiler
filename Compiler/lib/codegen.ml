@@ -352,7 +352,7 @@ and gen_args ctx args =
     process_args ctx "" [] args
 
 (* 处理语句列表的辅助函数 *)
-let gen_stmts ctx stmts =
+let rec gen_stmts ctx stmts =
     List.fold_left (fun (ctx, asm) stmt ->
         let (ctx', stmt_asm) = gen_stmt ctx stmt in
         (ctx', asm ^ "\n" ^ stmt_asm)
