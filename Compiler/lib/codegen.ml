@@ -354,7 +354,7 @@ and gen_args ctx args =
 (* 处理语句列表的辅助函数 *)
 let rec gen_stmts ctx stmts =
     List.fold_left (fun (ctx, asm) stmt ->
-        let (ctx', stmt_asm) = gen_stmt ctx stmt in
+        let (ctx', stmt_asm) = gen_stmts ctx stmt in
         (ctx', asm ^ "\n" ^ stmt_asm)
     ) (ctx, "") stmts
 
@@ -384,7 +384,7 @@ let unroll_loop ctx cond body =
         
         let loop_ctx = { ctx with 
             loop_stack = (begin_label, end_label) :: ctx.loop_stack } in
-        let (ctx_after_body, body_asm) = gen_stmt loop_ctx body in
+        let (ctx_after_body, body_asm) = gen_stmts loop_ctx body in
         
         (* 仅弹出循环栈，保留其他字段 *)
         let ctx_after_loop = { ctx_after_body with 
