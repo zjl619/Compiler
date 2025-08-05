@@ -210,7 +210,7 @@ let rec gen_expr ctx expr =
             | UMinus -> Printf.sprintf "neg %s, %s" reg_dest reg
             | Not    -> Printf.sprintf "seqz %s, %s" reg_dest reg
             in
-            let ctx = free_temp_reg ctx in  (* 释放源寄存器 *)
+            let ctx = free_temp_reg ctx reg in  (* 释放源寄存器 *)
             (* 将表达式加入CSE表 *)
             let ctx = { ctx with expr_table = (expr, reg_dest) :: ctx.expr_table } in
             (ctx, asm ^ "\n" ^ instr, reg_dest)
