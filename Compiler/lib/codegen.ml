@@ -53,46 +53,53 @@ let stack_align = 16
 
 (* 常量折叠函数 *)
 let rec const_fold_expr expr =
-    match expr with
-    | IntLit n -> IntLit n
-    | Var name -> Var name
-    | BinOp(e1, op, e2) ->
-        let e1' = const_fold_expr e1 in
-        let e2' = const_fold_expr e2 in
-        match (e1', e2') with
+  match expr with
+  | IntLit n -> IntLit n
+
+  | Var name -> Var name
+
+  | BinOp (e1, op, e2) ->
+      let e1' = const_fold_expr e1 in
+      let e2' = const_fold_expr e2 in
+      begin match (e1', e2') with
         | (IntLit n1, IntLit n2) ->
-            (try
-                let result = match op with
-                | Add -> n1 + n2
-                | Sub -> n1 - n2
-                | Mul -> n1 * n2
-                | Div -> if n2 = 0 then raise Division_by_zero; n1 / n2
-                | Mod -> if n2 = 0 then raise Division_by_zero; n1 mod n2
-                | Lt  -> if n1 < n2 then 1 else 0
-                | Le  -> if n1 <= n2 then 1 else 0
-                | Gt  -> if n1 > n2 then 1 else 0
-                | Ge  -> if n1 >= n2 then 1 else 0
-                | Eq  -> if n1 = n2 then 1 else 0
-                | Ne  -> if n1 <> n2 then 1 else 0
-                | And -> if n1 <> 0 && n2 <> 0 then 1 else 0
-                | Or  -> if n1 <> 0 || n2 <> 0 then 1 else 0
-                in
-                IntLit result
-            with Division_by_zero -> BinOp(e1', op, e2'))
-        | _ -> BinOp(e1', op, e2')
-    | UnOp(op, e) ->
-        let e' = const_fold_expr e in
-        match e' with
-        | IntLit n ->
-            let result = match op with
-            | UPlus  -> n
-            | UMinus -> -n
-            | Not    -> if n = 0 then 1 else 0
+            let folded =
+              match op with
+              | Add -> Some (IntLit (n1 + n2))
+              | Sub -> Some (IntLit (n1 - n2))
+              | Mul -> Some (IntLit (n1 * n2))
+              | Div -> if n2 = 0 then None else Some (IntLit (n1 / n2))
+              | Mod -> if n2 = 0 then None else Some (IntLit (n1 mod n2))
+              | Lt  -> Some (IntLit (if n1 <  n2 then 1 else 0))
+              | Le  -> Some (IntLit (if n1 <= n2 then 1 else 0))
+              | Gt  -> Some (IntLit (if n1 >  n2 then 1 else 0))
+              | Ge  -> Some (IntLit (if n1 >= n2 then 1 else 0))
+              | Eq  -> Some (IntLit (if n1 =  n2 then 1 else 0))
+              | Ne  -> Some (IntLit (if n1 <> n2 then 1 else 0))
+              | And -> Some (IntLit (if n1 <> 0 && n2 <> 0 then 1 else 0))
+              | Or  -> Some (IntLit (if n1 <> 0 || n2 <> 0 then 1 else 0))
             in
-            IntLit result
-        | _ -> UnOp(op, e')
-    | FuncCall(name, args) -> 
-        FuncCall(name, List.map const_fold_expr args)
+            (match folded with
+            | Some result -> result
+            | None -> BinOp (e1', op, e2'))
+        | _ -> BinOp (e1', op, e2')
+      end
+
+  | UnOp (op, e) ->
+      let e' = const_fold_expr e in
+      begin match e' with
+        | IntLit n ->
+            let result =
+              match op with
+              | UPlus  -> IntLit n
+              | UMinus -> IntLit (-n)
+              | Not    -> IntLit (if n = 0 then 1 else 0)
+            in result
+        | _ -> UnOp (op, e')
+      end
+
+  | FuncCall (name, args) ->
+      FuncCall (name, List.map const_fold_expr args)
 
 (* 常量折叠语句 *)
 let rec const_fold_stmt stmt =
