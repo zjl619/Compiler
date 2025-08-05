@@ -355,8 +355,9 @@ and gen_stmt ctx stmt =
     | While (cond, body) ->
         (* 在循环前重置CSE表 *)
         let ctx_loop = { ctx with expr_table = [] } in
-        let (ctx, begin_label) = fresh_label ctx_loop "loop_begin" in
-        let (ctx, end_label) = fresh_label ctx_loop "loop_end" in
+       let (ctx1, begin_label) = fresh_label ctx_loop "loop_begin" in
+let (ctx2, end_label)   = fresh_label ctx1 "loop_end" in
+
         let (ctx, cond_asm, cond_reg) = gen_expr ctx_loop cond in
         
         let loop_ctx = { ctx with 
