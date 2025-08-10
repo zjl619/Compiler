@@ -325,7 +325,7 @@ let rec gen_stmts ctx stmts =
     ) (ctx, "") stmts
 
 (* 语句代码生成 - 添加死代码消除 *)
-let rec gen_stmt ctx stmt =
+and gen_stmt ctx stmt =
     match stmt with
     | Block stmts ->
         (* 进入新作用域：压入一个新的空作用域 *)
