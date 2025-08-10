@@ -56,7 +56,9 @@ let rec eval_expr env expr =
   match expr with
   | IntLit n -> Some n
   | Var name -> 
-      (try List.assoc name env |> Some 
+      (try 
+         let value = List.assoc name env in
+         Some value
        with Not_found -> None)
   | BinOp(e1, op, e2) ->
       let v1 = eval_expr env e1 in
@@ -324,9 +326,6 @@ let rec gen_stmts ctx stmts =
 
 (* 语句代码生成 - 添加死代码消除 *)
 let rec gen_stmt ctx stmt =
-    (* 死代码消除: 跳过不可达代码 *)
-    if ctx.const_env = [("__dead", 1)] then (ctx, "") (* 标记为死代码 *) 
-    else
     match stmt with
     | Block stmts ->
         (* 进入新作用域：压入一个新的空作用域 *)
@@ -361,9 +360,10 @@ let rec gen_stmt ctx stmt =
         let new_const_env = 
           match const_val with
           | Some n -> 
-              List.remove_assoc name ctx.const_env @ [(name, n)]
+              (* 移除旧值并添加新值 *)
+              List.filter (fun (k, _) -> k <> name) ctx.const_env @ [(name, n)]
           | None -> 
-              List.remove_assoc name ctx.const_env
+              List.filter (fun (k, _) -> k <> name) ctx.const_env
         in
         let ctx = { ctx with const_env = new_const_env } in
         
@@ -378,9 +378,9 @@ let rec gen_stmt ctx stmt =
         | Some n when n <> 0 -> (* 条件为真 *)
             gen_stmt ctx then_stmt
         | Some _ -> (* 条件为假 *)
-            match else_stmt with
-            | Some s -> gen_stmt ctx s
-            | None -> (ctx, "")
+            (match else_stmt with
+             | Some s -> gen_stmt ctx s
+             | None -> (ctx, ""))
         | None -> (* 非常量条件 *)
             let (ctx, cond_asm, cond_reg) = gen_expr ctx cond in
             let (ctx, then_label) = fresh_label ctx "if_then" in
@@ -488,7 +488,7 @@ let gen_function func =
                     let reg = Printf.sprintf "a%d" index in
                     gen_save rest (index + 1) 
                         (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
-                ) else (
+                else (
                     (* 栈传递参数 *)
                     let stack_offset = (index - 8) * 4 in
                     let (_, reg) = alloc_temp_reg ctx in
