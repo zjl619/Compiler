@@ -325,7 +325,7 @@ let rec gen_stmts ctx stmts =
     ) (ctx, "") stmts
 
 (* 语句代码生成 - 添加死代码消除 *)
-and gen_stmt ctx stmt =
+let rec gen_stmt ctx stmt =
     match stmt with
     | Block stmts ->
         (* 进入新作用域：压入一个新的空作用域 *)
@@ -404,7 +404,7 @@ and gen_stmt ctx stmt =
                     Printf.sprintf "\n%s:" end_label in
             (free_temp_reg ctx, asm)
     
-    | While (cond, body) ->
+    | While (cond, body) ->  (* 修复：正确结束If分支的模式匹配 *)
         let (ctx, begin_label) = fresh_label ctx "loop_begin" in
         let (ctx, end_label) = fresh_label ctx "loop_end" in
         let (ctx, cond_asm, cond_reg) = gen_expr ctx cond in
@@ -487,7 +487,7 @@ let gen_function func =
                     (* 寄存器参数 *)
                     let reg = Printf.sprintf "a%d" index in
                     gen_save rest (index + 1) 
-                        (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset))
+                        (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
                 else (
                     (* 栈传递参数 *)
                     let stack_offset = (index - 8) * 4 in
