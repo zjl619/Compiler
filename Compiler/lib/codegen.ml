@@ -100,7 +100,7 @@ let add_var ctx name size =
 (* 优化的寄存器分配函数 *)
 let alloc_temp_reg ctx =
     (* 优先分配临时寄存器 *)
-    let temp_regs = ["t0"; "t1"; "t2"; "t3"; "t4"; "t5"; "t6"] in
+    let temp_regs = ["t0"; "t1"; "t2"; "t3"; "t4"; "t5"] in (* 保留t6用于大偏移量处理 *)
     let is_physical_reg_available reg =
         not (List.exists (function Physical r -> r = reg | _ -> false) ctx.used_regs)
     in
@@ -134,6 +134,19 @@ let align_stack size align =
     let remainder = size mod align in
     if remainder = 0 then size else size + (align - remainder)
 
+(* 生成大立即数加载代码 *)
+let gen_large_offset_access base offset access_op reg =
+    if offset >= -2048 && offset <= 2047 then
+        Printf.sprintf "    %s %s, %d(%s)" access_op reg offset base
+    else
+        (* 使用t6处理大偏移量 *)
+        let hi = offset / 4096 in
+        let lo = offset mod 4096 in
+        (* 处理负数 *)
+        let hi, lo = if lo >= 2048 then (hi + 1, lo - 4096) else (hi, lo) in
+        Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add t6, %s, t6\n    %s %s, 0(t6)"
+            hi lo base access_op reg
+
 (* 函数序言生成 *)
 let gen_prologue ctx func =
     let total_size = align_stack (ctx.saved_area_size + ctx.max_local_offset) stack_align in
@@ -146,12 +159,23 @@ let gen_prologue ctx func =
         in
         String.concat "\n" save_instrs
     in
+    
+    (* 处理大栈帧调整 *)
+    let stack_adjust_asm = 
+        if total_size <= 2047 then
+            Printf.sprintf "    addi sp, sp, -%d" total_size
+        else
+            let hi = total_size / 4096 in
+            let lo = total_size mod 4096 in
+            Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" hi lo
+    in
+    
     let asm = Printf.sprintf "
     .globl %s
 %s:
-    addi sp, sp, -%d
 %s
-" func.name func.name total_size save_regs_asm in
+%s
+" func.name func.name stack_adjust_asm save_regs_asm in
     (asm, { ctx with frame_size = total_size })
 
 (* 函数结语生成 *)
@@ -167,21 +191,21 @@ let gen_epilogue ctx =
         ra_restore ^ "\n" ^ s_regs_restore
     in
     
+    (* 处理大栈帧恢复 *)
+    let stack_restore_asm = 
+        if ctx.frame_size <= 2047 then
+            Printf.sprintf "    addi sp, sp, %d" ctx.frame_size
+        else
+            let hi = ctx.frame_size / 4096 in
+            let lo = ctx.frame_size mod 4096 in
+            Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" hi lo
+    in
+    
     Printf.sprintf "
 %s
-    addi sp, sp, %d
+%s
     ret
-" restore_regs_asm ctx.frame_size
-
-(* 寄存器加载/存储辅助函数 *)
-let gen_reg_access reg temp_reg op =
-    match reg with
-    | Physical _ -> ""  (* 物理寄存器不需要额外操作 *)
-    | Spill offset ->
-        match op with
-        | "load" -> Printf.sprintf "    lw %s, %d(sp)" temp_reg offset
-        | "store" -> Printf.sprintf "    sw %s, %d(sp)" temp_reg offset
-        | _ -> failwith "Invalid operation"
+" restore_regs_asm stack_restore_asm
 
 (* 表达式代码生成 *)
 let rec gen_expr ctx expr =
@@ -191,16 +215,20 @@ let rec gen_expr ctx expr =
         let asm = match reg with
             | Physical r -> Printf.sprintf "    li %s, %d" r n
             | Spill offset ->
-                Printf.sprintf "    li t0, %d\n    sw t0, %d(sp)" n offset
+                (* 使用大偏移量处理 *)
+                Printf.sprintf "%s\n    li t0, %d" (gen_large_offset_access "sp" offset "sw" "t0") n
         in
         (ctx, asm, reg)
     | Var name ->
         let offset = get_var_offset ctx name in
         let (ctx, reg) = alloc_temp_reg ctx in
         let asm = match reg with
-            | Physical r -> Printf.sprintf "    lw %s, %d(sp)" r offset
+            | Physical r -> 
+                gen_large_offset_access "sp" offset "lw" r
             | Spill spill_offset ->
-                Printf.sprintf "    lw t0, %d(sp)\n    sw t0, %d(sp)" offset spill_offset
+                Printf.sprintf "%s\n%s" 
+                    (gen_large_offset_access "sp" offset "lw" "t0")
+                    (gen_large_offset_access "sp" spill_offset "sw" "t0")
         in
         (ctx, asm, reg)
     | BinOp (e1, op, e2) ->
@@ -215,11 +243,13 @@ let rec gen_expr ctx expr =
                     | (Physical r1, Physical r2) -> 
                         Printf.sprintf "    mv %s, %s" r2 r1
                     | (Physical r, Spill offset) ->
-                        Printf.sprintf "    sw %s, %d(sp)" r offset
+                        gen_large_offset_access "sp" offset "sw" r
                     | (Spill offset, Physical r) ->
-                        Printf.sprintf "    lw %s, %d(sp)" r offset
+                        gen_large_offset_access "sp" offset "lw" r
                     | (Spill o1, Spill o2) ->
-                        Printf.sprintf "    lw t0, %d(sp)\n    sw t0, %d(sp)" o1 o2
+                        Printf.sprintf "%s\n%s"
+                            (gen_large_offset_access "sp" o1 "lw" "t0")
+                            (gen_large_offset_access "sp" o2 "sw" "t0")
                 in
                 (ctx', new_reg, move_instr)
             else
@@ -231,7 +261,7 @@ let rec gen_expr ctx expr =
             match reg with
             | Physical r -> r
             | Spill offset -> 
-                Printf.sprintf "lw %s, %d(sp)" temp_reg offset |> ignore;
+                let _ = gen_large_offset_access "sp" offset "lw" temp_reg in
                 temp_reg
         in
     
@@ -265,7 +295,7 @@ let rec gen_expr ctx expr =
         (* 存储结果 *)
         let store_result = match reg_dest with
             | Physical _ -> ""
-            | Spill offset -> Printf.sprintf "    sw %s, %d(sp)" actual_reg_dest offset
+            | Spill offset -> gen_large_offset_access "sp" offset "sw" actual_reg_dest
         in
     
         let full_asm = 
@@ -284,7 +314,7 @@ let rec gen_expr ctx expr =
         let actual_reg = match reg with
             | Physical r -> r
             | Spill offset -> 
-                Printf.sprintf "    lw t0, %d(sp)" offset |> ignore;
+                let _ = gen_large_offset_access "sp" offset "lw" "t0" in
                 "t0"
         in
         let instr = match op with
@@ -294,7 +324,7 @@ let rec gen_expr ctx expr =
         in
         let store_asm = match reg with
             | Physical _ -> ""
-            | Spill offset -> Printf.sprintf "    sw %s, %d(sp)" actual_reg offset
+            | Spill offset -> gen_large_offset_access "sp" offset "sw" actual_reg
         in
         let full_asm = 
           let parts = [asm] @
@@ -312,7 +342,12 @@ let rec gen_expr ctx expr =
         
         let stack_adj_asm = 
           if aligned_temp_space > 0 then 
-            Printf.sprintf "    addi sp, sp, -%d\n" aligned_temp_space
+            if aligned_temp_space <= 2047 then
+                Printf.sprintf "    addi sp, sp, -%d" aligned_temp_space
+            else
+                let hi = aligned_temp_space / 4096 in
+                let lo = aligned_temp_space mod 4096 in
+                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" hi lo
           else "" in
         
         let save_temps_asm = 
@@ -329,7 +364,7 @@ let rec gen_expr ctx expr =
                 let actual_src = match reg with
                     | Physical r -> r
                     | Spill offset -> 
-                        Printf.sprintf "    lw t0, %d(sp)" offset |> ignore;
+                        gen_large_offset_access "sp" offset "lw" "t0" |> ignore;
                         "t0"
                 in
                 let move_instr = 
@@ -343,10 +378,10 @@ let rec gen_expr ctx expr =
                 let actual_src = match reg with
                     | Physical r -> r
                     | Spill offset -> 
-                        Printf.sprintf "    lw t0, %d(sp)" offset |> ignore;
+                        gen_large_offset_access "sp" offset "lw" "t0" |> ignore;
                         "t0"
                 in
-                let store_instr = Printf.sprintf "    sw %s, %d(sp)" actual_src stack_offset in
+                let store_instr = gen_large_offset_access "sp" stack_offset "sw" actual_src in
                 let new_parts = parts @ [store_instr] in
                 move_args rest (index+1) new_parts
           in
@@ -362,7 +397,12 @@ let rec gen_expr ctx expr =
         
         let restore_stack_asm = 
           if aligned_temp_space > 0 then 
-            Printf.sprintf "    addi sp, sp, %d" aligned_temp_space
+            if aligned_temp_space <= 2047 then
+                Printf.sprintf "    addi sp, sp, %d" aligned_temp_space
+            else
+                let hi = aligned_temp_space / 4096 in
+                let lo = aligned_temp_space mod 4096 in
+                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" hi lo
           else "" in
         
         (* 分配结果寄存器 *)
@@ -370,7 +410,7 @@ let rec gen_expr ctx expr =
         
         let move_result = match reg_dest with
             | Physical r -> Printf.sprintf "    mv %s, a0" r
-            | Spill offset -> Printf.sprintf "    sw a0, %d(sp)" offset
+            | Spill offset -> gen_large_offset_access "sp" offset "sw" "a0"
         in
         
         let asm = 
@@ -430,9 +470,11 @@ and gen_stmt ctx stmt =
         let offset = get_var_offset ctx name in
         
         let store_asm = match reg with
-            | Physical r -> Printf.sprintf "    sw %s, %d(sp)" r offset
+            | Physical r -> gen_large_offset_access "sp" offset "sw" r
             | Spill spill_offset -> 
-                Printf.sprintf "    lw t0, %d(sp)\n    sw t0, %d(sp)" spill_offset offset
+                Printf.sprintf "%s\n%s"
+                    (gen_large_offset_access "sp" spill_offset "lw" "t0")
+                    (gen_large_offset_access "sp" offset "sw" "t0")
         in
         
         let asm = expr_asm ^ "\n" ^ store_asm in
@@ -443,9 +485,11 @@ and gen_stmt ctx stmt =
         let (ctx, expr_asm, reg) = gen_expr ctx expr in
         
         let store_asm = match reg with
-            | Physical r -> Printf.sprintf "    sw %s, %d(sp)" r offset
+            | Physical r -> gen_large_offset_access "sp" offset "sw" r
             | Spill spill_offset -> 
-                Printf.sprintf "    lw t0, %d(sp)\n    sw t0, %d(sp)" spill_offset offset
+                Printf.sprintf "%s\n%s"
+                    (gen_large_offset_access "sp" spill_offset "lw" "t0")
+                    (gen_large_offset_access "sp" offset "sw" "t0")
         in
         
         let asm = expr_asm ^ "\n" ^ store_asm in
@@ -460,7 +504,7 @@ and gen_stmt ctx stmt =
         let cond_value = match cond_reg with
             | Physical r -> r
             | Spill offset -> 
-                Printf.sprintf "    lw t0, %d(sp)" offset |> ignore;
+                gen_large_offset_access "sp" offset "lw" "t0" |> ignore;
                 "t0"
         in
         
@@ -504,7 +548,7 @@ and gen_stmt ctx stmt =
         let cond_value = match cond_reg with
             | Physical r -> r
             | Spill offset -> 
-                Printf.sprintf "    lw t0, %d(sp)" offset |> ignore;
+                gen_large_offset_access "sp" offset "lw" "t0" |> ignore;
                 "t0"
         in
         
@@ -543,7 +587,7 @@ and gen_stmt ctx stmt =
                 let result_asm = match r with
                     | Physical "a0" -> asm
                     | Physical r -> asm ^ "\n" ^ Printf.sprintf "    mv a0, %s" r
-                    | Spill offset -> asm ^ "\n" ^ Printf.sprintf "    lw a0, %d(sp)" offset
+                    | Spill offset -> asm ^ "\n" ^ gen_large_offset_access "sp" offset "lw" "a0"
                 in
                 (free_temp_reg ctx r, result_asm, r)
             | None -> (ctx, "", Physical "a0")
@@ -574,14 +618,13 @@ let gen_function func =
                 let offset = get_var_offset ctx param in
                 if index < 8 then (
                     let reg = Printf.sprintf "a%d" index in
-                    gen_save rest (index + 1)
-                        (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
+                    let store_instr = gen_large_offset_access "sp" offset "sw" reg in
+                    gen_save rest (index + 1) (asm ^ store_instr ^ "\n")
                 ) else (
                     let stack_offset = (index - 8) * 4 in
-                    let load_asm = Printf.sprintf "    lw t0, %d(sp)" stack_offset in
-                    let store_asm = Printf.sprintf "    sw t0, %d(sp)" offset in
-                    gen_save rest (index + 1)
-                        (asm ^ load_asm ^ "\n" ^ store_asm ^ "\n")
+                    let load_asm = gen_large_offset_access "sp" stack_offset "lw" "t0" in
+                    let store_asm = gen_large_offset_access "sp" offset "sw" "t0" in
+                    gen_save rest (index + 1) (asm ^ load_asm ^ "\n" ^ store_asm ^ "\n")
                 )
         in
         gen_save func.params 0 ""
@@ -598,14 +641,21 @@ let gen_function func =
     let prologue_asm =
         let save_regs_asm =
             let reg_saves = List.mapi (fun i reg ->
-                Printf.sprintf "    sw %s, %d(sp)" reg (i * 4))
-                ctx.saved_regs
+                gen_large_offset_access "sp" (i * 4) "sw" reg
+                ) ctx.saved_regs
             in
-            let ra_save = Printf.sprintf "    sw ra, %d(sp)" (List.length ctx.saved_regs * 4) in
+            let ra_save = gen_large_offset_access "sp" (List.length ctx.saved_regs * 4) "sw" "ra" in
             String.concat "\n" (reg_saves @ [ra_save])
         in
-        Printf.sprintf ".globl %s\n%s:\n    addi sp, sp, -%d\n%s"
-            func.name func.name ctx.frame_size save_regs_asm
+        Printf.sprintf ".globl %s\n%s:\n%s\n%s"
+            func.name func.name 
+            (if ctx.frame_size <= 2047 then 
+                Printf.sprintf "    addi sp, sp, -%d" ctx.frame_size
+             else
+                let hi = ctx.frame_size / 4096 in
+                let lo = ctx.frame_size mod 4096 in
+                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" hi lo)
+            save_regs_asm
     in
     
     let epilogue_asm = gen_epilogue ctx in
