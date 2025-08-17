@@ -325,7 +325,7 @@ let rec gen_stmts ctx stmts =
     ) (ctx, "") stmts
 
 (* 语句代码生成 - 添加死代码消除 *)
-let rec gen_stmt ctx stmt =
+and gen_stmt ctx stmt =
     match stmt with
     | Block stmts ->
         (* 进入新作用域：压入一个新的空作用域 *)
@@ -487,7 +487,7 @@ let gen_function func =
                     (* 寄存器参数 *)
                     let reg = Printf.sprintf "a%d" index in
                     gen_save rest (index + 1) 
-                        (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
+                        (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset))
                 else (
                     (* 栈传递参数 *)
                     let stack_offset = (index - 8) * 4 in
