@@ -498,7 +498,8 @@ and gen_stmt ctx stmt =
         
         let (ctx_after_body, body_asm) = gen_stmt ctx_with_loop body in
         
-        let (ctx, cond_asm, cond_reg) = gen_expr ctx_after_body cond in
+        (* 修复：使用_忽略未使用的ctx变量 *)
+        let (_, cond_asm, cond_reg) = gen_expr ctx_after_body cond in
         
         let cond_value = match cond_reg with
             | Physical r -> r
@@ -534,7 +535,8 @@ and gen_stmt ctx stmt =
         | [] -> failwith "continue outside loop")
     
     | Return expr_opt ->
-        let (ctx, expr_asm, reg) = 
+        (* 修复：使用_忽略未使用的reg变量 *)
+        let (ctx, expr_asm, _) = 
             match expr_opt with
             | Some expr -> 
                 let (ctx, asm, r) = gen_expr ctx expr in
