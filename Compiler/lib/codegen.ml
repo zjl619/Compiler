@@ -7,7 +7,7 @@ type reg_type =
   | CalleeSaved   (* 被调用者保存寄存器 *)
   | TempReg       (* 临时寄存器 *)
 
-(* 上下文类型 *)
+(* 上下文类型 - 添加 param_stack_start 字段 *)
 type context = {
     current_func: string;
     local_offset: int;
@@ -22,6 +22,7 @@ type context = {
     used_regs: string list;  (* 跟踪正在使用的寄存器 *)
     saved_area_size: int;
     max_local_offset: int;
+    param_stack_start: int; (* 新增：记录栈参数的起始位置 *)
 }
 
 (* 创建新上下文 *)
@@ -47,7 +48,8 @@ let create_context func_name =
       param_count = 0;
       used_regs = [];  (* 初始化为空列表 *)
       max_local_offset = 0; 
-      saved_area_size = 52 } (* 4(ra) + 12*4(regs) = 52 *)
+      saved_area_size = 52; (* 4(ra) + 12*4(regs) = 52 *)
+      param_stack_start = 0 } (* 新增：初始化为0 *)
 
 (* 栈对齐常量 *)
 let stack_align = 16
@@ -111,14 +113,10 @@ let align_stack size align =
     let remainder = size mod align in
     if remainder = 0 then size else size + (align - remainder)
 
-(* 函数序言生成 *)
+(* 函数序言生成 - 使用实际局部变量大小计算帧大小 *)
 let gen_prologue ctx func =
-    let estimated_locals = 
-        match func.name with
-        | "main" -> 500
-        | _ -> 200
-    in
-    let total_size = align_stack (ctx.saved_area_size + estimated_locals) stack_align in
+    (* 使用实际最大局部偏移量计算帧大小 *)
+    let total_size = align_stack (ctx.saved_area_size + ctx.max_local_offset) stack_align in
     let save_regs_asm = 
         let save_instrs = 
             List.mapi (fun i reg -> 
@@ -134,7 +132,10 @@ let gen_prologue ctx func =
     addi sp, sp, -%d
 %s
 " func.name func.name total_size save_regs_asm in
-    (asm, { ctx with frame_size = total_size })
+    (asm, { ctx with 
+        frame_size = total_size; 
+        param_stack_start = total_size  (* 记录栈参数的起始位置 *)
+    })
 
 (* 函数结语生成 *)
 let gen_epilogue ctx =
@@ -526,34 +527,13 @@ and gen_stmt ctx stmt =
 (* 函数代码生成 *)
 let gen_function func =
     let ctx = create_context func.name in
-    let ctx =
-        List.fold_left (fun ctx param ->
-            add_var ctx param 4
-        ) ctx func.params
-    in
+    (* 添加参数到作用域 *)
+    let ctx = List.fold_left (fun ctx param -> add_var ctx param 4) ctx func.params in
     
-    let estimated_locals = 
-        match func.name with
-        | "main" -> 1000
-        | _ -> 400
-    in
+    (* 生成序言 - 使用实际局部变量大小计算帧大小 *)
+    let (prologue_asm, ctx) = gen_prologue ctx func in
     
-    let total_size = align_stack (ctx.saved_area_size + estimated_locals) stack_align in
-    let ctx = { ctx with frame_size = total_size } in
-    
-    let prologue_asm =
-        let save_regs_asm =
-            let reg_saves = List.mapi (fun i reg ->
-                Printf.sprintf "    sw %s, %d(sp)" reg (i * 4))
-                ctx.saved_regs
-            in
-            let ra_save = Printf.sprintf "    sw ra, %d(sp)" (List.length ctx.saved_regs * 4) in
-            String.concat "\n" (reg_saves @ [ra_save])
-        in
-        Printf.sprintf ".globl %s\n%s:\n    addi sp, sp, -%d\n%s"
-            func.name func.name total_size save_regs_asm
-    in
-    
+    (* 保存参数到局部变量 - 修复栈参数处理 *)
     let save_params_asm =
         let rec gen_save params index asm =
             match params with
@@ -565,9 +545,9 @@ let gen_function func =
                     gen_save rest (index + 1)
                         (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
                 ) else (
-                    (* 标准RISC-V调用约定：栈参数从调用者栈帧的sp+0开始 *)
-                    let stack_offset = total_size + (index - 8) * 4 in
-                    let load_asm = Printf.sprintf "    lw t0, %d(sp)" stack_offset in
+                    (* 关键修复：栈参数从调用者帧加载 *)
+                    let caller_offset = ctx.param_stack_start + (index - 8) * 4 in
+                    let load_asm = Printf.sprintf "    lw t0, %d(sp)" caller_offset in
                     let store_asm = Printf.sprintf "    sw t0, %d(sp)" offset in
                     gen_save rest (index + 1)
                         (asm ^ load_asm ^ "\n" ^ store_asm ^ "\n")
