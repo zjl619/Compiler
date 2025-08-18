@@ -220,7 +220,7 @@ let gen_epilogue ctx =
     ret
 " restore_regs_asm stack_restore_asm
 
-(* 表达式代码生成 *)
+(* 表达式代码生成 - 修复二元运算符处理逻辑 *)
 let rec gen_expr ctx expr =
     match expr with
     | IntLit n -> 
@@ -248,27 +248,9 @@ let rec gen_expr ctx expr =
         let (ctx, asm1, reg1) = gen_expr ctx e1 in
         let (ctx, asm2, reg2) = gen_expr ctx e2 in
     
-        (* 处理寄存器冲突 *)
-        let (ctx, reg2, extra_move) = 
-            if reg1 = reg2 then
-                let (ctx', new_reg) = alloc_temp_reg ctx in
-                let move_instr = match (reg2, new_reg) with
-                    | (Physical r1, Physical r2) -> 
-                        Printf.sprintf "    mv %s, %s" r2 r1
-                    | (Physical r, Spill offset) ->
-                        gen_large_offset_access "sp" offset "sw" r
-                    | (Spill offset, Physical r) ->
-                        gen_large_offset_access "sp" offset "lw" r
-                    | (Spill o1, Spill o2) ->
-                        Printf.sprintf "%s\n%s"
-                            (gen_large_offset_access "sp" o1 "lw" "t0")
-                            (gen_large_offset_access "sp" o2 "sw" "t0")
-                in
-                (ctx', new_reg, move_instr)
-            else
-                (ctx, reg2, "")
-        in
-    
+        (* 处理寄存器冲突 - 不再重用左操作数寄存器 *)
+        let (ctx, temp_reg) = alloc_temp_reg ctx in
+        
         (* 获取实际使用的寄存器 *)
         let get_actual_reg reg temp_reg =
             match reg with
@@ -281,46 +263,50 @@ let rec gen_expr ctx expr =
         let actual_reg1 = get_actual_reg reg1 "t0" in
         let actual_reg2 = get_actual_reg reg2 "t1" in
         
-        (* 目标寄存器 *)
-        let reg_dest = reg1 in
-        let actual_reg_dest = actual_reg1 in
+        let actual_temp = match temp_reg with
+            | Physical r -> r
+            | Spill offset -> 
+                let _ = gen_large_offset_access "sp" offset "lw" "t2" in
+                "t2"
+        in
         
         let instr = match op with
-            | Add -> Printf.sprintf "    add %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
-            | Sub -> Printf.sprintf "    sub %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
-            | Mul -> Printf.sprintf "    mul %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
-            | Div -> Printf.sprintf "    div %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
-            | Mod -> Printf.sprintf "    rem %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
-            | Lt  -> Printf.sprintf "    slt %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Add -> Printf.sprintf "    add %s, %s, %s" actual_temp actual_reg1 actual_reg2
+            | Sub -> Printf.sprintf "    sub %s, %s, %s" actual_temp actual_reg1 actual_reg2
+            | Mul -> Printf.sprintf "    mul %s, %s, %s" actual_temp actual_reg1 actual_reg2
+            | Div -> Printf.sprintf "    div %s, %s, %s" actual_temp actual_reg1 actual_reg2
+            | Mod -> Printf.sprintf "    rem %s, %s, %s" actual_temp actual_reg1 actual_reg2
+            | Lt  -> Printf.sprintf "    slt %s, %s, %s" actual_temp actual_reg1 actual_reg2
             | Le  -> Printf.sprintf "    slt %s, %s, %s\n    xori %s, %s, 1" 
-                        actual_reg_dest actual_reg2 actual_reg1 actual_reg_dest actual_reg_dest
-            | Gt  -> Printf.sprintf "    slt %s, %s, %s" actual_reg_dest actual_reg2 actual_reg1
+                        actual_temp actual_reg2 actual_reg1 actual_temp actual_temp
+            | Gt  -> Printf.sprintf "    slt %s, %s, %s" actual_temp actual_reg2 actual_reg1
             | Ge  -> Printf.sprintf "    slt %s, %s, %s\n    xori %s, %s, 1" 
-                        actual_reg_dest actual_reg1 actual_reg2 actual_reg_dest actual_reg_dest
+                        actual_temp actual_reg1 actual_reg2 actual_temp actual_temp
             | Eq  -> Printf.sprintf "    sub %s, %s, %s\n    seqz %s, %s" 
-                        actual_reg_dest actual_reg1 actual_reg2 actual_reg_dest actual_reg_dest
+                        actual_temp actual_reg1 actual_reg2 actual_temp actual_temp
             | Ne  -> Printf.sprintf "    sub %s, %s, %s\n    snez %s, %s" 
-                        actual_reg_dest actual_reg1 actual_reg2 actual_reg_dest actual_reg_dest
-            | And -> Printf.sprintf "    and %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
-            | Or  -> Printf.sprintf "    or %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+                        actual_temp actual_reg1 actual_reg2 actual_temp actual_temp
+            | And -> Printf.sprintf "    and %s, %s, %s" actual_temp actual_reg1 actual_reg2
+            | Or  -> Printf.sprintf "    or %s, %s, %s" actual_temp actual_reg1 actual_reg2
         in
         
         (* 存储结果 *)
-        let store_result = match reg_dest with
+        let store_result = match temp_reg with
             | Physical _ -> ""
-            | Spill offset -> gen_large_offset_access "sp" offset "sw" actual_reg_dest
+            | Spill offset -> gen_large_offset_access "sp" offset "sw" actual_temp
         in
     
         let full_asm = 
             let parts = [asm1; asm2] @
-                     (if extra_move = "" then [] else [extra_move]) @
                      [instr] @
                      (if store_result = "" then [] else [store_result]) in
             String.concat "\n" (List.filter (fun s -> s <> "") parts) in
     
-        (* 释放第二个寄存器 *)
+        (* 释放操作数寄存器 *)
+        let ctx = free_temp_reg ctx reg1 in
         let ctx = free_temp_reg ctx reg2 in
-        (ctx, full_asm, reg_dest)
+        
+        (ctx, full_asm, temp_reg)
         
     | UnOp (op, e) ->
         let (ctx, asm, reg) = gen_expr ctx e in
