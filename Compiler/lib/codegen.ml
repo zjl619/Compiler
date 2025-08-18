@@ -22,7 +22,6 @@ type context = {
     used_regs: string list;  (* 跟踪正在使用的寄存器 *)
     saved_area_size: int;
     max_local_offset: int;
-    param_stack_start: int;  (* 新增：记录栈参数的起始位置 *)
 }
 
 (* 创建新上下文 *)
@@ -48,8 +47,7 @@ let create_context func_name =
       param_count = 0;
       used_regs = [];  (* 初始化为空列表 *)
       max_local_offset = 0; 
-      saved_area_size = 52; (* 4(ra) + 12*4(regs) = 52 *)
-      param_stack_start = 0 } (* 新增：初始化为0 *)
+      saved_area_size = 52 } (* 4(ra) + 12*4(regs) = 52 *)
 
 (* 栈对齐常量 *)
 let stack_align = 16
@@ -115,8 +113,12 @@ let align_stack size align =
 
 (* 函数序言生成 *)
 let gen_prologue ctx func =
-    (* 使用实际最大局部偏移量计算帧大小 *)
-    let total_size = align_stack (ctx.saved_area_size + ctx.max_local_offset) stack_align in
+    let estimated_locals = 
+        match func.name with
+        | "main" -> 500
+        | _ -> 200
+    in
+    let total_size = align_stack (ctx.saved_area_size + estimated_locals) stack_align in
     let save_regs_asm = 
         let save_instrs = 
             List.mapi (fun i reg -> 
@@ -132,10 +134,7 @@ let gen_prologue ctx func =
     addi sp, sp, -%d
 %s
 " func.name func.name total_size save_regs_asm in
-    (asm, { ctx with 
-        frame_size = total_size; 
-        param_stack_start = total_size  (* 记录栈参数的起始位置 *)
-    })
+    (asm, { ctx with frame_size = total_size })
 
 (* 函数结语生成 *)
 let gen_epilogue ctx =
@@ -524,41 +523,64 @@ and gen_stmt ctx stmt =
         let (ctx, asm, reg) = gen_expr ctx e in 
         (free_temp_reg ctx reg, asm)
 
-(* 生成函数参数保存代码 *)
-let gen_save_params ctx func =
-    let asm = ref [] in
-    List.iteri (fun i param ->
-        if i < 8 then begin
-            (* 前8个参数直接保存到局部变量 *)
-            let reg = Printf.sprintf "a%d" i in
-            let offset = get_var_offset ctx param in
-            asm := !asm @ [Printf.sprintf "    sw %s, %d(sp)" reg offset]
-        end else begin
-            (* 关键修复：栈参数从调用者帧加载 *)
-            let caller_offset = ctx.param_stack_start + (i - 8) * 4 in
-            let local_offset = get_var_offset ctx param in
-            asm := !asm @ [
-                Printf.sprintf "    lw t0, %d(sp)" caller_offset;
-                Printf.sprintf "    sw t0, %d(sp)" local_offset
-            ]
-        end
-    ) func.params;
-    String.concat "\n" !asm
-
 (* 函数代码生成 *)
 let gen_function func =
     let ctx = create_context func.name in
-    (* 添加参数到作用域 *)
-    let ctx = List.fold_left (fun ctx param -> add_var ctx param 4) ctx func.params in
+    let ctx =
+        List.fold_left (fun ctx param ->
+            add_var ctx param 4
+        ) ctx func.params
+    in
     
-    (* 生成序言 *)
-    let (prologue_asm, ctx) = gen_prologue ctx func in
+    let estimated_locals = 
+        match func.name with
+        | "main" -> 1000
+        | _ -> 400
+    in
     
-    (* 保存参数到局部变量 *)
-    let save_params_asm = gen_save_params ctx func in
+    let total_size = align_stack (ctx.saved_area_size + estimated_locals) stack_align in
+    let ctx = { ctx with frame_size = total_size } in
     
-    (* 生成函数体 *)
-    let (_, body_asm) = gen_stmts ctx [func.body] in
+    let prologue_asm =
+        let save_regs_asm =
+            let reg_saves = List.mapi (fun i reg ->
+                Printf.sprintf "    sw %s, %d(sp)" reg (i * 4))
+                ctx.saved_regs
+            in
+            let ra_save = Printf.sprintf "    sw ra, %d(sp)" (List.length ctx.saved_regs * 4) in
+            String.concat "\n" (reg_saves @ [ra_save])
+        in
+        Printf.sprintf ".globl %s\n%s:\n    addi sp, sp, -%d\n%s"
+            func.name func.name total_size save_regs_asm
+    in
+    
+    let save_params_asm =
+        let rec gen_save params index asm =
+            match params with
+            | [] -> asm
+            | param::rest ->
+                let offset = get_var_offset ctx param in
+                if index < 8 then (
+                    let reg = Printf.sprintf "a%d" index in
+                    gen_save rest (index + 1)
+                        (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
+                ) else (
+                    (* 标准RISC-V调用约定：栈参数从调用者栈帧的sp+0开始 *)
+                    let stack_offset = total_size + (index - 8) * 4 in
+                    let load_asm = Printf.sprintf "    lw t0, %d(sp)" stack_offset in
+                    let store_asm = Printf.sprintf "    sw t0, %d(sp)" offset in
+                    gen_save rest (index + 1)
+                        (asm ^ load_asm ^ "\n" ^ store_asm ^ "\n")
+                )
+        in
+        gen_save func.params 0 ""
+    in
+    
+    let (_, body_asm) =
+        match func.body with
+        | Block stmts -> gen_stmts ctx stmts
+        | _ -> gen_stmt ctx func.body
+    in
     
     (* 只在函数体没有显式return时添加epilogue *)
     let needs_epilogue = 
