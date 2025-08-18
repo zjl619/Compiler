@@ -181,11 +181,103 @@ let gen_store_spill reg temp_reg =
         let offset = get_spill_offset reg in
         Printf.sprintf "    sw %s, %d(sp)" temp_reg offset
     else ""
-
-(* 表达式代码生成 *)
 let rec gen_expr ctx expr =
-    (* 保持不变 *)
-    (* ... *)
+    match expr with
+    | IntLit n -> 
+        let (ctx, reg) = alloc_temp_reg ctx in
+        if is_spill_reg reg then
+            let temp_asm = Printf.sprintf "    li t0, %d\n%s" n (gen_store_spill reg "t0") in
+            (ctx, temp_asm, reg)
+        else
+            (ctx, Printf.sprintf "    li %s, %d" reg n, reg)
+    | Var name ->
+        let offset = get_var_offset ctx name in
+        let (ctx, reg) = alloc_temp_reg ctx in
+        if is_spill_reg reg then
+            let temp_asm = Printf.sprintf "    lw t0, %d(sp)\n%s" offset (gen_store_spill reg "t0") in
+            (ctx, temp_asm, reg)
+        else
+            (ctx, Printf.sprintf "    lw %s, %d(sp)" reg offset, reg)
+    | BinOp (e1, op, e2) ->
+        let (ctx, asm1, reg1) = gen_expr ctx e1 in
+        let (ctx, asm2, reg2) = gen_expr ctx e2 in
+    
+        (* 如果两个寄存器相同，需要分配新寄存器 *)
+        let (ctx, reg2, extra_move) = 
+            if reg1 = reg2 then
+                let (ctx', new_reg) = alloc_temp_reg ctx in
+                let move_instr = 
+                    if is_spill_reg new_reg then
+                        Printf.sprintf "    mv t1, %s\n%s" reg2 (gen_store_spill new_reg "t1")
+                    else if is_spill_reg reg2 then
+                        Printf.sprintf "%s\n    mv %s, t0" (gen_load_spill reg2 "t0") new_reg
+                    else
+                        Printf.sprintf "    mv %s, %s" new_reg reg2
+                in
+                (ctx', new_reg, move_instr)
+            else
+                (ctx, reg2, "")
+        in
+    
+        (* 处理溢出寄存器 *)
+        let load1 = gen_load_spill reg1 "t0" in
+        let load2 = gen_load_spill reg2 "t1" in
+        let actual_reg1 = if is_spill_reg reg1 then "t0" else reg1 in
+        let actual_reg2 = if is_spill_reg reg2 then "t1" else reg2 in
+    
+        (* 重用第一个寄存器作为目标寄存器 *)
+        let reg_dest = reg1 in
+        let actual_reg_dest = actual_reg1 in
+        
+        let instr = match op with
+            | Add -> Printf.sprintf "    add %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Sub -> Printf.sprintf "    sub %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Mul -> Printf.sprintf "    mul %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Div -> Printf.sprintf "    div %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Mod -> Printf.sprintf "    rem %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Lt  -> Printf.sprintf "    slt %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Le  -> Printf.sprintf "    slt %s, %s, %s\n    xori %s, %s, 1" actual_reg_dest actual_reg2 actual_reg1 actual_reg_dest actual_reg_dest
+            | Gt  -> Printf.sprintf "    slt %s, %s, %s" actual_reg_dest actual_reg2 actual_reg1
+            | Ge  -> Printf.sprintf "    slt %s, %s, %s\n    xori %s, %s, 1" actual_reg_dest actual_reg1 actual_reg2 actual_reg_dest actual_reg_dest
+            | Eq  -> Printf.sprintf "    sub %s, %s, %s\n    seqz %s, %s" actual_reg_dest actual_reg1 actual_reg2 actual_reg_dest actual_reg_dest
+            | Ne  -> Printf.sprintf "    sub %s, %s, %s\n    snez %s, %s" actual_reg_dest actual_reg1 actual_reg2 actual_reg_dest actual_reg_dest
+            | And -> Printf.sprintf "    and %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+            | Or  -> Printf.sprintf "    or %s, %s, %s" actual_reg_dest actual_reg1 actual_reg2
+        in
+        
+        let store_result = gen_store_spill reg_dest actual_reg_dest in
+    
+        let full_asm = 
+        let parts = [asm1; asm2] @
+                 (if extra_move = "" then [] else [extra_move]) @
+                 (if load1 = "" then [] else [load1]) @
+                 (if load2 = "" then [] else [load2]) @
+                 [instr] @
+                 (if store_result = "" then [] else [store_result]) in
+        String.concat "\n" (List.filter (fun s -> s <> "") parts) in
+    
+        (* 释放第二个寄存器 *)
+        let ctx = free_temp_reg ctx reg2 in
+        (ctx, full_asm, reg_dest)
+        
+    | UnOp (op, e) ->
+        let (ctx, asm, reg) = gen_expr ctx e in
+        let load_asm = gen_load_spill reg "t0" in
+        let actual_reg = if is_spill_reg reg then "t0" else reg in
+        let instr = match op with
+        | UPlus  -> Printf.sprintf "    mv %s, %s" actual_reg actual_reg
+        | UMinus -> Printf.sprintf "    neg %s, %s" actual_reg actual_reg
+        | Not    -> Printf.sprintf "    seqz %s, %s" actual_reg actual_reg
+        in
+        let store_asm = gen_store_spill reg actual_reg in
+        let full_asm = 
+          let parts = [asm] @
+                     (if load_asm = "" then [] else [load_asm]) @
+                     [instr] @
+                     (if store_asm = "" then [] else [store_asm]) in
+          String.concat "\n" (List.filter (fun s -> s <> "") parts) in
+        (ctx, full_asm, reg)
+
 
 (* 函数调用处理 - 关键修复 *)
 | FuncCall (name, args) ->
