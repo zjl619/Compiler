@@ -139,20 +139,37 @@ let gen_large_offset_access base offset access_op reg =
     if offset >= -2048 && offset <= 2047 then
         Printf.sprintf "    %s %s, %d(%s)" access_op reg offset base
     else
-        (* 使用t6处理大偏移量 *)
-        let hi = (offset asr 12) land 0xFFFFF in  (* 取高20位 *)
-        let lo = offset land 0xFFF in              (* 取低12位 *)
-        (* 如果低12位超过2047，调整高位 *)
+        (* 使用t6处理大偏移量 - 修复符号扩展问题 *)
+        let sign_bit = if offset < 0 then 0xFFFFF000 else 0 in
+        let hi = ((offset + 0x800) asr 12) land 0xFFFFF in
+        let lo = offset land 0xFFF in
         let hi, lo = 
-            if lo > 2047 then (hi + 1, lo - 4096)
+            if lo >= 0x800 then (hi + 1, lo - 0x1000) 
             else (hi, lo)
         in
         Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add t6, %s, t6\n    %s %s, 0(t6)"
-            hi lo base access_op reg
+            (hi lor sign_bit) lo base access_op reg
 
 (* 函数序言生成 *)
 let gen_prologue ctx func =
     let total_size = align_stack (ctx.saved_area_size + ctx.max_local_offset) stack_align in
+    
+    (* 处理大栈帧调整 - 修复立即数范围问题 *)
+    let stack_adjust_asm = 
+        if total_size <= 2047 then
+            Printf.sprintf "    addi sp, sp, -%d" total_size
+        else
+            let sign_bit = if total_size < 0 then 0xFFFFF000 else 0 in
+            let hi = ((total_size + 0x800) asr 12) land 0xFFFFF in
+            let lo = total_size land 0xFFF in
+            let hi, lo = 
+                if lo >= 0x800 then (hi + 1, lo - 0x1000) 
+                else (hi, lo)
+            in
+            Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" 
+                (hi lor sign_bit) lo
+    in
+    
     let save_regs_asm = 
         let save_instrs = 
             List.mapi (fun i reg -> 
@@ -161,21 +178,6 @@ let gen_prologue ctx func =
             @ [Printf.sprintf "    sw ra, %d(sp)" (List.length ctx.saved_regs * 4)]
         in
         String.concat "\n" save_instrs
-    in
-    
-    (* 处理大栈帧调整 - 修复立即数范围问题 *)
-    let stack_adjust_asm = 
-        if total_size <= 2047 then
-            Printf.sprintf "    addi sp, sp, -%d" total_size
-        else
-            let hi = (total_size asr 12) land 0xFFFFF in  (* 取高20位 *)
-            let lo = total_size land 0xFFF in              (* 取低12位 *)
-            (* 如果低12位超过2047，调整高位 *)
-            let hi, lo = 
-                if lo > 2047 then (hi + 1, lo - 4096)
-                else (hi, lo)
-            in
-            Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" hi lo
     in
     
     let asm = Printf.sprintf "
@@ -204,14 +206,15 @@ let gen_epilogue ctx =
         if ctx.frame_size <= 2047 then
             Printf.sprintf "    addi sp, sp, %d" ctx.frame_size
         else
-            let hi = (ctx.frame_size asr 12) land 0xFFFFF in  (* 取高20位 *)
-            let lo = ctx.frame_size land 0xFFF in              (* 取低12位 *)
-            (* 如果低12位超过2047，调整高位 *)
+            let sign_bit = if ctx.frame_size < 0 then 0xFFFFF000 else 0 in
+            let hi = ((ctx.frame_size + 0x800) asr 12) land 0xFFFFF in
+            let lo = ctx.frame_size land 0xFFF in
             let hi, lo = 
-                if lo > 2047 then (hi + 1, lo - 4096)
+                if lo >= 0x800 then (hi + 1, lo - 0x1000) 
                 else (hi, lo)
             in
-            Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" hi lo
+            Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" 
+                (hi lor sign_bit) lo
     in
     
     Printf.sprintf "
@@ -339,19 +342,21 @@ let rec gen_expr ctx expr =
         let temp_space = 28 + n_extra * 4 in
         let aligned_temp_space = align_stack temp_space stack_align in
         
+        (* 修复栈偏移计算 *)
         let stack_adj_asm = 
           if aligned_temp_space > 0 then 
             if aligned_temp_space <= 2047 then
                 Printf.sprintf "    addi sp, sp, -%d" aligned_temp_space
             else
-                let hi = (aligned_temp_space asr 12) land 0xFFFFF in  (* 取高20位 *)
-                let lo = aligned_temp_space land 0xFFF in              (* 取低12位 *)
-                (* 如果低12位超过2047，调整高位 *)
+                let sign_bit = if aligned_temp_space < 0 then 0xFFFFF000 else 0 in
+                let hi = ((aligned_temp_space + 0x800) asr 12) land 0xFFFFF in
+                let lo = aligned_temp_space land 0xFFF in
                 let hi, lo = 
-                    if lo > 2047 then (hi + 1, lo - 4096)
+                    if lo >= 0x800 then (hi + 1, lo - 0x1000) 
                     else (hi, lo)
                 in
-                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" hi lo
+                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" 
+                    (hi lor sign_bit) lo
           else "" in
         
         let save_temps_asm = 
@@ -378,7 +383,8 @@ let rec gen_expr ctx expr =
                 let new_parts = parts @ [move_instr] in
                 move_args rest (index+1) new_parts
             | reg::rest ->
-                let stack_offset = 28 + (index - 8) * 4 in
+                (* 修复：参数位置在栈指针上方 *)
+                let stack_offset = aligned_temp_space + (index - 8) * 4 in
                 let actual_src = match reg with
                     | Physical r -> r
                     | Spill offset -> 
@@ -392,7 +398,7 @@ let rec gen_expr ctx expr =
           move_args arg_regs 0 []
         in
         
-        let call_asm = Printf.sprintf "    call %s\n" name in
+        let call_asm = Printf.sprintf "    call %s" name in
         
         let restore_temps_asm = 
           List.init 7 (fun i -> 
@@ -404,19 +410,21 @@ let rec gen_expr ctx expr =
             if aligned_temp_space <= 2047 then
                 Printf.sprintf "    addi sp, sp, %d" aligned_temp_space
             else
-                let hi = (aligned_temp_space asr 12) land 0xFFFFF in  (* 取高20位 *)
-                let lo = aligned_temp_space land 0xFFF in              (* 取低12位 *)
-                (* 如果低12位超过2047，调整高位 *)
+                let sign_bit = if aligned_temp_space < 0 then 0xFFFFF000 else 0 in
+                let hi = ((aligned_temp_space + 0x800) asr 12) land 0xFFFFF in
+                let lo = aligned_temp_space land 0xFFF in
                 let hi, lo = 
-                    if lo > 2047 then (hi + 1, lo - 4096)
+                    if lo >= 0x800 then (hi + 1, lo - 0x1000) 
                     else (hi, lo)
                 in
-                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" hi lo
+                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" 
+                    (hi lor sign_bit) lo
           else "" in
         
         (* 分配结果寄存器 *)
         let (ctx, reg_dest) = alloc_temp_reg ctx in
         
+        (* 修复：在恢复临时寄存器前保存结果 *)
         let move_result = match reg_dest with
             | Physical r -> Printf.sprintf "    mv %s, a0" r
             | Spill offset -> gen_large_offset_access "sp" offset "sw" "a0"
@@ -428,9 +436,10 @@ let rec gen_expr ctx expr =
                      (if save_temps_asm = "" then [] else [save_temps_asm]) @
                      (if move_args_asm = "" then [] else [move_args_asm]) @
                      [call_asm] @
+                     [move_result] @  (* 先保存结果 *)
                      (if restore_temps_asm = "" then [] else [restore_temps_asm]) @
-                     (if restore_stack_asm = "" then [] else [restore_stack_asm]) @
-                     [move_result] in
+                     (if restore_stack_asm = "" then [] else [restore_stack_asm]) 
+          in
           String.concat "\n" (List.filter (fun s -> s <> "") parts) in
         
         (* 释放参数寄存器 *)
@@ -629,8 +638,9 @@ let gen_function func =
                     let reg = Printf.sprintf "a%d" index in
                     let store_instr = gen_large_offset_access "sp" offset "sw" reg in
                     gen_save rest (index + 1) (asm ^ store_instr ^ "\n")
-                ) else (
-                    let stack_offset = (index - 8) * 4 in
+                else (
+                    (* 修复：参数位置在栈指针上方 *)
+                    let stack_offset = (index - 8) * 4 + ctx.saved_area_size in
                     let load_asm = gen_large_offset_access "sp" stack_offset "lw" "t0" in
                     let store_asm = gen_large_offset_access "sp" offset "sw" "t0" in
                     gen_save rest (index + 1) (asm ^ load_asm ^ "\n" ^ store_asm ^ "\n")
@@ -661,14 +671,15 @@ let gen_function func =
             (if ctx.frame_size <= 2047 then 
                 Printf.sprintf "    addi sp, sp, -%d" ctx.frame_size
              else
-                let hi = (ctx.frame_size asr 12) land 0xFFFFF in  (* 取高20位 *)
-                let lo = ctx.frame_size land 0xFFF in              (* 取低12位 *)
-                (* 如果低12位超过2047，调整高位 *)
+                let sign_bit = if ctx.frame_size < 0 then 0xFFFFF000 else 0 in
+                let hi = ((ctx.frame_size + 0x800) asr 12) land 0xFFFFF in
+                let lo = ctx.frame_size land 0xFFF in
                 let hi, lo = 
-                    if lo > 2047 then (hi + 1, lo - 4096)
+                    if lo >= 0x800 then (hi + 1, lo - 0x1000) 
                     else (hi, lo)
                 in
-                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" hi lo)
+                Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" 
+                    (hi lor sign_bit) lo)
             save_regs_asm
     in
     
