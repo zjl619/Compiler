@@ -370,9 +370,146 @@ and gen_args ctx args =
   in
   process_args ctx "" [] 0 args
 
+
+(* 处理语句列表的辅助函数 *)
+let rec gen_stmts ctx stmts =
+    List.fold_left (fun (ctx, asm) stmt ->
+        let (ctx', stmt_asm) = gen_stmt ctx stmt in
+        let new_asm = if asm = "" then stmt_asm
+                     else if stmt_asm = "" then asm
+                     else asm ^ "\n" ^ stmt_asm in
+        (ctx', new_asm)
+    ) (ctx, "") stmts
+
 (* 语句代码生成 *)
-(* 保持不变 *)
-(* ... *)
+and gen_stmt ctx stmt =
+    match stmt with
+    | Block stmts ->
+        let new_ctx = { ctx with var_offset = [] :: ctx.var_offset } in
+        let (ctx_after, asm) = gen_stmts new_ctx stmts in
+        let popped_ctx = 
+            match ctx_after.var_offset with
+            | _ :: outer_scopes -> { ctx_after with var_offset = outer_scopes }
+            | [] -> failwith "Scope stack underflow"
+        in
+        (popped_ctx, asm)
+    
+    | VarDecl (name, expr) ->
+        let (ctx, expr_asm, reg) = gen_expr ctx expr in
+        let ctx = add_var ctx name 4 in
+        let offset = get_var_offset ctx name in
+        let load_asm = gen_load_spill reg "t0" in
+        let actual_reg = if is_spill_reg reg then "t0" else reg in
+        let store_instr = Printf.sprintf "    sw %s, %d(sp)" actual_reg offset in
+        let asm = 
+          let parts = [expr_asm] @
+                     (if load_asm = "" then [] else [load_asm]) @
+                     [store_instr] in
+          String.concat "\n" (List.filter (fun s -> s <> "") parts) in
+        (free_temp_reg ctx reg, asm)
+    
+    | VarAssign (name, expr) ->
+        let offset = get_var_offset ctx name in
+        let (ctx, expr_asm, reg) = gen_expr ctx expr in
+        let load_asm = gen_load_spill reg "t0" in
+        let actual_reg = if is_spill_reg reg then "t0" else reg in
+        let store_instr = Printf.sprintf "    sw %s, %d(sp)" actual_reg offset in
+        let asm = 
+          let parts = [expr_asm] @
+                     (if load_asm = "" then [] else [load_asm]) @
+                     [store_instr] in
+          String.concat "\n" (List.filter (fun s -> s <> "") parts) in
+        (free_temp_reg ctx reg, asm)
+    
+     | If (cond, then_stmt, else_stmt) ->
+        let (ctx, cond_asm, cond_reg) = gen_expr ctx cond in
+        let (ctx, then_label) = fresh_label ctx "if_then" in
+        let (ctx, else_label) = fresh_label ctx "if_else" in
+        let (ctx, end_label) = fresh_label ctx "if_end" in
+        
+        let load_cond = gen_load_spill cond_reg "t0" in
+        let actual_cond_reg = if is_spill_reg cond_reg then "t0" else cond_reg in
+        
+        let (ctx, then_asm) = gen_stmt ctx then_stmt in
+        let (ctx, else_asm) = match else_stmt with
+            | Some s -> gen_stmt ctx s
+            | None -> (ctx, "") in
+        
+        let asm = 
+          let parts = [cond_asm] @
+                     (if load_cond = "" then [] else [load_cond]) @
+                     [Printf.sprintf "    beqz %s, %s" actual_cond_reg else_label] @
+                     [Printf.sprintf "    j %s" then_label] @
+                     [Printf.sprintf "%s:" else_label] @
+                     (if else_asm = "" then [] else [else_asm]) @
+                     [Printf.sprintf "    j %s" end_label] @
+                     [Printf.sprintf "%s:" then_label] @
+                     (if then_asm = "" then [] else [then_asm]) @
+                     [Printf.sprintf "    j %s" end_label] @
+                     [Printf.sprintf "%s:" end_label] in
+          String.concat "\n" (List.filter (fun s -> s <> "") parts) in
+        (free_temp_reg ctx cond_reg, asm)
+    
+    | While (cond, body) ->
+        let (ctx, begin_label) = fresh_label ctx "loop_begin" in
+        let (ctx, next_label) = fresh_label ctx "loop_next" in
+        let (ctx, end_label) = fresh_label ctx "loop_end" in
+        let (ctx, cond_asm, cond_reg) = gen_expr ctx cond in
+        
+        let load_cond = gen_load_spill cond_reg "t0" in
+        let actual_cond_reg = if is_spill_reg cond_reg then "t0" else cond_reg in
+        
+        let loop_ctx = { ctx with 
+            loop_stack = (begin_label, next_label, end_label) :: ctx.loop_stack } in
+        let (ctx_after_body, body_asm) = gen_stmt loop_ctx body in
+        
+        let ctx_after_loop = { ctx_after_body with 
+            loop_stack = List.tl ctx_after_body.loop_stack } in
+        
+        let asm = 
+          let parts = [Printf.sprintf "%s:" begin_label] @
+                     [cond_asm] @
+                     (if load_cond = "" then [] else [load_cond]) @
+                     [Printf.sprintf "    beqz %s, %s" actual_cond_reg end_label] @
+                     (if body_asm = "" then [] else [body_asm]) @
+                     [Printf.sprintf "%s:" next_label] @
+                     [Printf.sprintf "    j %s" begin_label] @
+                     [Printf.sprintf "%s:" end_label] in
+          String.concat "\n" (List.filter (fun s -> s <> "") parts) in
+        (free_temp_reg ctx_after_loop cond_reg, asm)
+    
+    | Break ->
+        (match ctx.loop_stack with
+        | (_, _, end_label)::_ -> 
+            (ctx, Printf.sprintf "    j %s" end_label)
+        | [] -> failwith "break outside loop")
+    
+    | Continue ->
+        (match ctx.loop_stack with
+        | (_, next_label, _)::_ ->
+            (ctx, Printf.sprintf "    j %s" next_label)
+        | [] -> failwith "continue outside loop")
+    
+    | Return expr_opt ->
+        let (ctx, expr_asm, reg) = 
+            match expr_opt with
+            | Some expr -> 
+                let (ctx, asm, r) = gen_expr ctx expr in
+                let load_asm = gen_load_spill r "t0" in
+                let actual_reg = if is_spill_reg r then "t0" else r in
+                let parts = [asm] @
+                           (if load_asm = "" then [] else [load_asm]) in
+                let full_asm = String.concat "\n" (List.filter (fun s -> s <> "") parts) in
+                if actual_reg = "a0" then (ctx, full_asm, "a0")
+                else (ctx, full_asm ^ "\n" ^ Printf.sprintf "    mv a0, %s" actual_reg, "a0")
+            | None -> (ctx, "", "a0")
+        in
+        let epilogue_asm = gen_epilogue ctx in
+        (free_temp_reg ctx reg, expr_asm ^ "\n" ^ epilogue_asm)
+    | EmptyStmt -> (ctx, "")
+    | ExprStmt e -> 
+        let (ctx, asm, reg) = gen_expr ctx e in 
+        (free_temp_reg ctx reg, asm)
 
 (* 函数代码生成 - 关键修复栈参数访问 *)
 let gen_function func =
