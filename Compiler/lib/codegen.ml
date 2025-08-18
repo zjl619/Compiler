@@ -520,7 +520,7 @@ let gen_function func =
     (* 生成序言 *)
     let (prologue_asm, ctx) = gen_prologue ctx func in
     
-    (* 保存参数到局部变量 - 修复栈参数访问 */
+    (* 保存参数到局部变量 - 修复栈参数访问 *)
     let save_params_asm =
         let buf = Buffer.create 256 in
         List.iteri (fun i param ->
