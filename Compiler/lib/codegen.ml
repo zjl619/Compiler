@@ -638,6 +638,7 @@ let gen_function func =
                     let reg = Printf.sprintf "a%d" index in
                     let store_instr = gen_large_offset_access "sp" offset "sw" reg in
                     gen_save rest (index + 1) (asm ^ store_instr ^ "\n")
+                    )
                 else (
                     (* 修复：参数位置在栈指针上方 *)
                     let stack_offset = (index - 8) * 4 + ctx.saved_area_size in
