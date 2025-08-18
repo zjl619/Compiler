@@ -552,7 +552,7 @@ let gen_function func =
     (* 生成序言 - 使用帧指针 *)
     let (prologue_asm, ctx) = gen_prologue ctx func in
     
-    (* 保存参数到局部变量 - 使用帧指针 */
+    (* 保存参数到局部变量 - 使用帧指针 *)
     let save_params_asm =
         let buf = Buffer.create 256 in
         List.iteri (fun i param ->
