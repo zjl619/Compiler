@@ -544,7 +544,7 @@ and gen_stmt ctx stmt =
         
         let ctx_after_loop = { ctx_after_body with 
             loop_stack = List.tl ctx_after_body.loop_stack } in
-        (free_temp_reg ctx_after_loop cond_reg, asm)
+        (free_temp_reg ctx_after_loop cond_reg, _)
     
     | Break ->
         (match ctx.loop_stack with
