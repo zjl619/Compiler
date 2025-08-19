@@ -12,9 +12,6 @@ type reg =
   | Physical of string  (* 物理寄存器 *)
   | Spill of int        (* 栈偏移位置 *)
 
-(* 大立即数处理结构 *)
-type large_imm = { hi : int; lo : int }
-
 (* 循环上下文 *)
 type loop_ctx = {
     break_label: string;
@@ -69,7 +66,7 @@ let create_context func_name =
 (* 栈对齐常量 *)
 let stack_align = 16
 
-(* 修改大立即数处理函数，返回元组而不是记录 *)
+(* 大立即数处理函数 - 返回元组 (hi, lo) *)
 let adjust_large_immediate value =
     let hi = (value asr 12) land 0xFFFFF in
     let lo = value land 0xFFF in
@@ -149,9 +146,9 @@ let gen_large_offset_access base offset access_op reg =
         Printf.sprintf "    %s %s, %d(%s)" access_op reg offset base
     else
         (* 使用统一的大立即数处理 *)
-        let adjusted = adjust_large_immediate offset in
+        let (hi, lo) = adjust_large_immediate offset in
         Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add t6, %s, t6\n    %s %s, 0(t6)"
-            adjusted.hi adjusted.lo base access_op reg
+            hi lo base access_op reg
 
 (* 函数序言生成 *)
 let gen_prologue ctx func =
@@ -160,9 +157,9 @@ let gen_prologue ctx func =
         if ctx.frame_size <= 2047 then
             Printf.sprintf "    addi sp, sp, -%d" ctx.frame_size
         else
-            let adjusted = adjust_large_immediate ctx.frame_size in
+            let (hi, lo) = adjust_large_immediate ctx.frame_size in
             Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" 
-                adjusted.hi adjusted.lo
+                hi lo
     in
     
     let save_regs_asm = 
@@ -201,9 +198,9 @@ let gen_epilogue ctx =
         if ctx.frame_size <= 2047 then
             Printf.sprintf "    addi sp, sp, %d" ctx.frame_size
         else
-            let adjusted = adjust_large_immediate ctx.frame_size in
+            let (hi, lo) = adjust_large_immediate ctx.frame_size in
             Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" 
-                adjusted.hi adjusted.lo
+                hi lo
     in
     
     Printf.sprintf "
@@ -337,9 +334,9 @@ let rec gen_expr ctx expr =
                 Printf.sprintf "    addi sp, sp, -%d" aligned_temp_space
             else
                 (* 使用统一的大立即数处理 *)
-                let adjusted = adjust_large_immediate aligned_temp_space in
+                let (hi, lo) = adjust_large_immediate aligned_temp_space in
                 Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" 
-                    adjusted.hi adjusted.lo
+                    hi lo
           else "" in
         
         let save_temps_asm = 
@@ -393,9 +390,9 @@ let rec gen_expr ctx expr =
                 Printf.sprintf "    addi sp, sp, %d" aligned_temp_space
             else
                 (* 使用统一的大立即数处理 *)
-                let adjusted = adjust_large_immediate aligned_temp_space in
+                let (hi, lo) = adjust_large_immediate aligned_temp_space in
                 Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    add sp, sp, t6" 
-                    adjusted.hi adjusted.lo
+                    hi lo
           else "" in
         
         (* 分配结果寄存器 *)
@@ -547,16 +544,6 @@ and gen_stmt ctx stmt =
         
         let ctx_after_loop = { ctx_after_body with 
             loop_stack = List.tl ctx_after_body.loop_stack } in
-        
-        let asm = 
-          let parts = [Printf.sprintf "%s:" begin_label] @
-                     [cond_asm] @
-                     [Printf.sprintf "    beqz %s, %s" cond_value end_label] @
-                     (if body_asm = "" then [] else [body_asm]) @
-                     [Printf.sprintf "%s:" next_label] @
-                     [Printf.sprintf "    j %s" begin_label] @
-                     [Printf.sprintf "%s:" end_label] in
-          String.concat "\n" (List.filter (fun s -> s <> "") parts) in
         (free_temp_reg ctx_after_loop cond_reg, asm)
     
     | Break ->
