@@ -612,9 +612,9 @@ let gen_function func =
         if total_size <= 2047 then
             Printf.sprintf "    addi sp, sp, -%d" total_size
         else
-            let adjusted = adjust_large_immediate total_size in
+            let (hi, lo) = adjust_large_immediate total_size in
             Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" 
-                adjusted.hi adjusted.lo
+                hi lo
     in
     
     let prologue_asm =
