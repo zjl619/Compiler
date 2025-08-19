@@ -74,7 +74,7 @@ let adjust_large_immediate value =
     let hi = (value asr 12) land 0xFFFFF in
     let lo = value land 0xFFF in
     (* 处理低12位符号扩展 *)
-    if lo >= 2048 then ( hi = hi + 1; lo = lo - 4096 )
+    if lo >= 2048 then (  hi + 1; lo - 4096 )
     else ( hi; lo )
 
 (* 获取唯一标签 - 使用函数名作为前缀 *)
