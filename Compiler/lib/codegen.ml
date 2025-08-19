@@ -534,8 +534,8 @@ let gen_function func =
     
     let estimated_locals = 
         match func.name with
-        | "main" -> 1000
-        | _ -> 400
+        | "main" -> 2000
+        | _ -> 800
     in
     
     let total_size = align_stack (ctx.saved_area_size + estimated_locals) stack_align in
