@@ -523,7 +523,6 @@ and gen_stmt ctx stmt =
         let (ctx, asm, reg) = gen_expr ctx e in 
         (free_temp_reg ctx reg, asm)
 
-(* 函数代码生成 *)
 let gen_function func =
     let ctx = create_context func.name in
     let ctx =
@@ -532,28 +531,39 @@ let gen_function func =
         ) ctx func.params
     in
     
-    let estimated_locals = 
-        match func.name with
-        | "main" -> 1000
-        | _ -> 400
-    in
-    
-    let total_size = align_stack (ctx.saved_area_size + estimated_locals) stack_align in
+    (* 改进1：移除硬编码的局部变量估计值 *)
+    (* 使用动态计算的最大偏移量 *)
+    let base_size = ctx.saved_area_size + ctx.max_local_offset in
+    let param_space = max (List.length func.params - 8) 0 * 4 in
+    let total_size = align_stack (base_size + param_space) stack_align in
     let ctx = { ctx with frame_size = total_size } in
+    
+    (* 改进2：处理大栈帧调整 *)
+    let stack_adjust_asm = 
+        if total_size <= 2047 then
+            Printf.sprintf "    addi sp, sp, -%d" total_size
+        else
+            let adjusted = adjust_large_immediate total_size in
+            Printf.sprintf "    lui t6, %d\n    addi t6, t6, %d\n    sub sp, sp, t6" 
+                adjusted.hi adjusted.lo
+    in
     
     let prologue_asm =
         let save_regs_asm =
             let reg_saves = List.mapi (fun i reg ->
-                Printf.sprintf "    sw %s, %d(sp)" reg (i * 4))
-                ctx.saved_regs
+                gen_large_offset_access "sp" (i * 4) "sw" reg
+                ) ctx.saved_regs
             in
-            let ra_save = Printf.sprintf "    sw ra, %d(sp)" (List.length ctx.saved_regs * 4) in
+            let ra_save = gen_large_offset_access "sp" (List.length ctx.saved_regs * 4) "sw" "ra" in
             String.concat "\n" (reg_saves @ [ra_save])
         in
-        Printf.sprintf ".globl %s\n%s:\n    addi sp, sp, -%d\n%s"
-            func.name func.name total_size save_regs_asm
+        Printf.sprintf ".globl %s\n%s:\n%s\n%s"
+            func.name func.name 
+            stack_adjust_asm 
+            save_regs_asm
     in
     
+    (* 改进3：正确处理栈参数偏移 *)
     let save_params_asm =
         let rec gen_save params index asm =
             match params with
@@ -562,45 +572,27 @@ let gen_function func =
                 let offset = get_var_offset ctx param in
                 if index < 8 then (
                     let reg = Printf.sprintf "a%d" index in
-                    gen_save rest (index + 1)
-                        (asm ^ Printf.sprintf "    sw %s, %d(sp)\n" reg offset)
+                    let store_instr = gen_large_offset_access "sp" offset "sw" reg in
+                    gen_save rest (index + 1) (asm ^ store_instr ^ "\n")
                 ) else (
-                    (* 标准RISC-V调用约定：栈参数从调用者栈帧的sp+0开始 *)
-                    let stack_offset = total_size + (index - 8) * 4 in
-                    let load_asm = Printf.sprintf "    lw t0, %d(sp)" stack_offset in
-                    let store_asm = Printf.sprintf "    sw t0, %d(sp)" offset in
-                    gen_save rest (index + 1)
-                        (asm ^ load_asm ^ "\n" ^ store_asm ^ "\n")
+                    (* 计算栈参数在调用者栈帧中的位置 *)
+                    let stack_offset = total_size + 28 + (index - 8) * 4 in
+                    let load_asm = gen_large_offset_access "sp" stack_offset "lw" "t0" in
+                    let store_asm = gen_large_offset_access "sp" offset "sw" "t0" in
+                    gen_save rest (index + 1) (asm ^ load_asm ^ "\n" ^ store_asm ^ "\n")
                 )
         in
         gen_save func.params 0 ""
     in
     
-    let (_, body_asm) =
-        match func.body with
-        | Block stmts -> gen_stmts ctx stmts
-        | _ -> gen_stmt ctx func.body
-    in
+    (* 改进4：正确处理函数体生成 *)
+    let (ctx_after_body, body_asm) = gen_stmts ctx [func.body] in
     
-    (* 只在函数体没有显式return时添加epilogue *)
-    let needs_epilogue = 
-        let rec has_return = function
-            | Return _ -> true
-            | Block stmts -> List.exists has_return stmts
-            | If (_, then_stmt, Some else_stmt) -> has_return then_stmt && has_return else_stmt
-            | If (_, _, None) -> false
-            | While (_, _) -> false
-            | _ -> false
-        in
-        not (has_return func.body)
-    in
+    (* 改进5：确保总是生成结语 *)
+    let epilogue_asm = gen_epilogue ctx_after_body in
     
-    let epilogue_asm = 
-        if needs_epilogue then gen_epilogue ctx 
-        else ""
-    in
-    
-    prologue_asm ^ "\n" ^ save_params_asm ^ body_asm ^ epilogue_asm
+    prologue_asm ^ "\n" ^ save_params_asm ^ body_asm ^ "\n" ^ 
+    ctx_after_body.return_label ^ ":\n" ^ epilogue_asm
     
 (* 编译单元代码生成 *)
 let compile cu =
