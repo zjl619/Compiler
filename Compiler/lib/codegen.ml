@@ -4,7 +4,6 @@
 *)
 
 open Ast
-open Riscv
 
 (* 全局标签计数器 *)
 let global_label_counter = ref 0
