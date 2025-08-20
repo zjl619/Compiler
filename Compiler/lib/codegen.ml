@@ -544,6 +544,15 @@ and gen_stmt ctx stmt =
         
         let ctx_after_loop = { ctx_after_body with 
             loop_stack = List.tl ctx_after_body.loop_stack } in
+             let asm = 
+          let parts = [Printf.sprintf "%s:" begin_label] @
+                     [cond_asm] @
+                     [Printf.sprintf "    beqz %s, %s" cond_value end_label] @
+                     (if body_asm = "" then [] else [body_asm]) @
+                     [Printf.sprintf "%s:" next_label] @
+                     [Printf.sprintf "    j %s" begin_label] @
+                     [Printf.sprintf "%s:" end_label] in
+          String.concat "\n" (List.filter (fun s -> s <> "") parts) in
         (free_temp_reg ctx_after_loop cond_reg, asm)
     
     | Break ->
