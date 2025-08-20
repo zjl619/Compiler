@@ -568,7 +568,7 @@ and gen_stmt ctx stmt =
         | [] -> failwith "continue outside loop")
     
     | Return expr_opt ->
-        let (ctx, expr_asm, r) = 
+        let (ctx, expr_asm, _) = 
             match expr_opt with
             | Some expr -> 
                 let (ctx, asm, reg) = gen_expr ctx expr in
